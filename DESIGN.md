@@ -84,6 +84,11 @@ Rough upload need per person (~3 Mbps per 720p30 stream with transparency):
 Two people, Windows only: invite code → one Spout2 source in → transparent video over a direct
 connection → one Spout2 source out into OBS. Proves latency and transparency.
 
+Progress:
+- ✅ Grab one frame from a Spout2 sender with transparency (`cargo run -- grab "<name>"`).
+  Verified with Avatar Live. Note: Avatar Live leaves a faint alpha haze (1–15) over ~34% of the frame,
+  likely from its post-processing; check whether disabling bloom/effects removes it.
+
 ### Setup steps (in order)
 1. ✅ Write this design document
 2. ✅ Install the Rust toolchain (`rustup`) — already present: Rust 1.97.1 (msvc) + VS Build Tools 2026

@@ -2,6 +2,9 @@
 /target/
 **/target/
 
+# Test frame captures from spout-probe
+/spout-probe/captures/
+
 # Editor / OS clutter
 .vscode/
 .idea/
