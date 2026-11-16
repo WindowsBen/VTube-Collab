@@ -109,7 +109,15 @@ Progress:
 - ✅ Spout2 output: decoded frames published as Spout2 sender "VTube Collab test" (`spout-probe/src/sender.rs`),
   verified in OBS (Spout2 Capture) with correct transparency. Removed from Spout's list on exit.
   Known: solid alpha comes back as 250–254 (YUV rounding); not visible. Optional fix: snap ≥250 → 255, ≤4 → 0.
-- ⬜ Peer-to-peer connection between two instances (invite code / handshake server).
+- ✅ One-way P2P on one PC (`collab host "<sender>"` / `collab join`): copy-paste invite/reply codes
+  (~1000 chars, deflate + base64, prefix `VTC1-`), `webrtcbin` with Google STUN, jitter buffer 50 ms.
+  60 fps sent and received; guest publishes Spout2 "Collab - <name>" with transparency. Clean exit on Enter.
+- ⬜ Two-way P2P on one PC.
+- ⬜ Test bundle (collab.exe + only the needed GStreamer DLLs), verified with GStreamer hidden from PATH.
+- ⬜ Two-PC test over the internet; measure end-to-end latency.
+
+Code layout: `vtc-core/` (shared: Spout capture/output, packing), `collab/` (the app),
+`spout-probe/` and `encode-test/` (test tools).
 
 ### Setup steps (in order)
 1. ✅ Write this design document

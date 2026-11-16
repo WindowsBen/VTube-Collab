@@ -23,7 +23,10 @@ use gstreamer_video as gst_video;
 // The "prelude" brings in the extra methods GStreamer objects have (by_name, set_state...).
 use gst::prelude::*;
 
-use spout_probe::{grab::Grabber, sender::SpoutSender, spout};
+use vtc_core::grab::Grabber;
+use vtc_core::packing::{pack, unpack};
+use vtc_core::sender::SpoutSender;
+use vtc_core::spout;
 
 const FPS: u64 = 60;
 
@@ -292,41 +295,6 @@ impl FrameCounter {
         // Round to the nearest frame (timestamps can be off by a nanosecond or two).
         (pts.saturating_sub(first) + self.frame_ns / 2) / self.frame_ns
     }
-}
-
-/// RGBA w×h → RGBA (2w)×h. Left: colour (made opaque). Right: alpha as grey.
-/// Fully transparent pixels get black colour: their colour is invisible anyway,
-/// and black compresses better than leftover junk.
-fn pack(rgba: &[u8], w: usize, h: usize) -> Vec<u8> {
-    let mut out = vec![0u8; w * 2 * h * 4];
-    for y in 0..h {
-        let src = &rgba[y * w * 4..(y + 1) * w * 4];
-        let dst = &mut out[y * w * 8..(y + 1) * w * 8];
-        // Split the output row into its left (colour) and right (alpha) halves.
-        let (left, right) = dst.split_at_mut(w * 4);
-        for x in 0..w {
-            let [r, g, b, a] = [src[x * 4], src[x * 4 + 1], src[x * 4 + 2], src[x * 4 + 3]];
-            let colour = if a == 0 { [0, 0, 0, 255] } else { [r, g, b, 255] };
-            left[x * 4..x * 4 + 4].copy_from_slice(&colour);
-            right[x * 4..x * 4 + 4].copy_from_slice(&[a, a, a, 255]);
-        }
-    }
-    out
-}
-
-/// The reverse of `pack`: colour from the left half, alpha from the right half's green.
-/// `stride` = bytes per row in the decoded frame (may include padding).
-fn unpack(packed: &[u8], stride: usize, w: usize, h: usize) -> Vec<u8> {
-    let mut out = vec![0u8; w * h * 4];
-    for y in 0..h {
-        let row = &packed[y * stride..];
-        for x in 0..w {
-            let c = &row[x * 4..x * 4 + 3];
-            let a = row[(w + x) * 4 + 1];
-            out[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&[c[0], c[1], c[2], a]);
-        }
-    }
-    out
 }
 
 /// Compare original vs round-tripped frame: colour quality and alpha accuracy.
