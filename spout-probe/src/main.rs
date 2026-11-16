@@ -104,7 +104,7 @@ fn grab_sender(name: &str) {
 
     // Breakdown of alpha values: shows soft edges / faint backgrounds, not just 0 or 255.
     println!("  alpha breakdown:");
-    for (lo, hi) in [(0u8, 0u8), (1, 15), (16, 127), (128, 254), (255, 255)] {
+    for (lo, hi) in [(0u8, 0u8), (1, 15), (16, 127), (128, 239), (240, 249), (250, 254), (255, 255)] {
         let n = frame.rgba.chunks_exact(4).filter(|px| (lo..=hi).contains(&px[3])).count();
         println!("    {lo:>3}-{hi:<3}: {:5.1}%", n as f64 * 100.0 / total as f64);
     }

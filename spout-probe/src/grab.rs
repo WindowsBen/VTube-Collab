@@ -45,25 +45,9 @@ pub struct Grabber {
 impl Grabber {
     /// One-time setup: connect to the GPU, open the sender's texture, make a staging copy.
     pub fn open(info: &SharedTextureInfo) -> Result<Grabber> {
+        // 1. Connect to the default graphics card.
+        let (device, context) = create_device()?;
         unsafe {
-            // 1. Connect to the default graphics card.
-            let mut device: Option<ID3D11Device> = None;
-            let mut context: Option<ID3D11DeviceContext> = None;
-            D3D11CreateDevice(
-                None,                     // default graphics card
-                D3D_DRIVER_TYPE_HARDWARE, // real GPU, not software emulation
-                HMODULE::default(),
-                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                None,
-                D3D11_SDK_VERSION,
-                Some(&mut device),
-                None,
-                Some(&mut context),
-            )?;
-            // `unwrap()` = "this must be there". D3D11CreateDevice succeeded, so it is.
-            let device = device.unwrap();
-            let context = context.unwrap();
-
             // 2. Open the sender's texture through the handle it shared.
             let handle = HANDLE(info.share_handle as usize as *mut _);
             let mut shared: Option<ID3D11Texture2D> = None;
@@ -144,6 +128,28 @@ impl Grabber {
         }
         Ok(())
     }
+}
+
+/// Connect to the default graphics card. Returns the device (creates GPU objects)
+/// and its context (gives the GPU commands). Shared with the Spout sender.
+pub fn create_device() -> Result<(ID3D11Device, ID3D11DeviceContext)> {
+    let mut device: Option<ID3D11Device> = None;
+    let mut context: Option<ID3D11DeviceContext> = None;
+    unsafe {
+        D3D11CreateDevice(
+            None,                     // default graphics card
+            D3D_DRIVER_TYPE_HARDWARE, // real GPU, not software emulation
+            HMODULE::default(),
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            None,
+            D3D11_SDK_VERSION,
+            Some(&mut device),
+            None,
+            Some(&mut context),
+        )?;
+    }
+    // `unwrap()` = "this must be there". D3D11CreateDevice succeeded, so it is.
+    Ok((device.unwrap(), context.unwrap()))
 }
 
 /// A single captured frame: plain RGBA bytes, 4 per pixel, row after row.

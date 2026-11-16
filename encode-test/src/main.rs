@@ -1,7 +1,8 @@
 //! encode-test: proves the "transparent video over H.264" trick on one PC, no network.
 //!
 //!   capture (Spout2) → pack colour + alpha side by side → NVIDIA H.264 encode
-//!   → decode → unpack → compare with the original
+//!   → decode → unpack → publish as Spout2 "VTube Collab test" (for OBS)
+//!   + compare one frame with the original
 //!
 //! Usage (release build for real timing):
 //!   cargo run --release -p encode-test -- "Avatar Live" [seconds=10] [bitrate_kbps=8000]
@@ -22,9 +23,12 @@ use gstreamer_video as gst_video;
 // The "prelude" brings in the extra methods GStreamer objects have (by_name, set_state...).
 use gst::prelude::*;
 
-use spout_probe::{grab::Grabber, spout};
+use spout_probe::{grab::Grabber, sender::SpoutSender, spout};
 
 const FPS: u64 = 60;
+
+/// Name of the Spout2 source this test publishes (pick it in OBS).
+const SPOUT_OUT_NAME: &str = "VTube Collab test";
 
 /// Which frame (by number) we keep for the before/after quality comparison.
 const COMPARE_FRAME: u64 = 120;
@@ -119,7 +123,25 @@ fn run(name: &str, seconds: u64, bitrate_kbps: u32) -> Result<(), Box<dyn std::e
         });
     }
 
-    // ---- 4. Receive decoded frames at the end of the pipeline ----
+    // ---- 4a. Spout output thread: unpacks decoded frames and publishes them ----
+    // A "channel" passes data between threads. `sync_channel(2)` holds at most 2 frames;
+    // if the Spout thread falls behind, extra frames are dropped instead of piling up.
+    let (frame_tx, frame_rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, usize)>(2);
+    let out_name = SPOUT_OUT_NAME.to_string();
+    let spout_thread = std::thread::spawn(move || -> Result<u64, String> {
+        // The sender is created inside this thread and lives only here.
+        let mut sender = SpoutSender::new(&out_name, w as u32, h as u32).map_err(|e| e.to_string())?;
+        let mut sent = 0;
+        // `for ... in frame_rx` waits for frames until the channel closes.
+        for (packed, stride) in frame_rx {
+            let rgba = unpack(&packed, stride, w, h);
+            sender.send(&rgba).map_err(|e| e.to_string())?;
+            sent += 1;
+        }
+        Ok(sent)
+    });
+
+    // ---- 4b. Receive decoded frames at the end of the pipeline ----
     {
         let push_times = push_times.clone();
         let results = results.clone();
@@ -139,14 +161,19 @@ fn run(name: &str, seconds: u64, bitrate_kbps: u32) -> Result<(), Box<dyn std::e
                             r.total_latency.push(t0.elapsed());
                         }
                     }
+                    // Copy the decoded frame out, with its row stride.
+                    let caps = sample.caps().ok_or(gst::FlowError::Error)?;
+                    let vinfo =
+                        gst_video::VideoInfo::from_caps(caps).map_err(|_| gst::FlowError::Error)?;
+                    let stride = vinfo.stride()[0] as usize;
+                    let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
+                    let pixels = map.as_slice().to_vec();
+
                     if frame == COMPARE_FRAME {
-                        // Keep a copy of this frame plus its row stride for the comparison.
-                        let caps = sample.caps().ok_or(gst::FlowError::Error)?;
-                        let vinfo = gst_video::VideoInfo::from_caps(caps)
-                            .map_err(|_| gst::FlowError::Error)?;
-                        let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
-                        r.decoded_compare = Some((map.as_slice().to_vec(), vinfo.stride()[0] as usize));
+                        r.decoded_compare = Some((pixels.clone(), stride));
                     }
+                    // Hand it to the Spout thread; if it's busy, skip this frame.
+                    let _ = frame_tx.try_send((pixels, stride));
                     Ok(gst::FlowSuccess::Ok)
                 })
                 .build(),
@@ -208,6 +235,16 @@ fn run(name: &str, seconds: u64, bitrate_kbps: u32) -> Result<(), Box<dyn std::e
         }
     }
     pipeline.set_state(gst::State::Null)?;
+
+    // Dropping the pipeline drops the appsink callback and its channel end, which
+    // tells the Spout thread "no more frames". Then wait for it to finish.
+    drop(appsink);
+    drop(pipeline);
+    match spout_thread.join() {
+        Ok(Ok(sent)) => println!("\nSpout output \"{SPOUT_OUT_NAME}\": {sent} frames published"),
+        Ok(Err(e)) => println!("\nSpout output failed: {e}"),
+        Err(_) => println!("\nSpout output thread crashed"),
+    }
 
     // ---- 7. Report ----
     let mut r = results.lock().unwrap();

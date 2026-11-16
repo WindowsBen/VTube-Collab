@@ -2,4 +2,5 @@
 //! shared with other programs in this project (e.g. encode-test).
 
 pub mod grab;
+pub mod sender;
 pub mod spout;

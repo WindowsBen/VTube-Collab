@@ -106,6 +106,10 @@ Progress:
   (99% under 23.8 ms), ~25 ms incl. capture + packing. Alpha avg error 0.4/255, no new haze.
   Colour PSNR 33.7 dB (34.9 dB at 16 Mbit/s) — limited by 4:2:0 chroma, not bitrate.
   Later: pack/convert on the GPU (saves ~8–10 ms); consider 4:4:4 or HEVC for sharper colour.
+- ✅ Spout2 output: decoded frames published as Spout2 sender "VTube Collab test" (`spout-probe/src/sender.rs`),
+  verified in OBS (Spout2 Capture) with correct transparency. Removed from Spout's list on exit.
+  Known: solid alpha comes back as 250–254 (YUV rounding); not visible. Optional fix: snap ≥250 → 255, ≤4 → 0.
+- ⬜ Peer-to-peer connection between two instances (invite code / handshake server).
 
 ### Setup steps (in order)
 1. ✅ Write this design document

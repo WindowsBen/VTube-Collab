@@ -12,14 +12,18 @@ use std::ffi::CString;
 use std::mem::size_of;
 
 use windows::core::PCSTR;
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
 use windows::Win32::System::Memory::{
-    MapViewOfFile, OpenFileMappingA, UnmapViewOfFile, VirtualQuery, FILE_MAP_READ,
-    MEMORY_BASIC_INFORMATION, MEMORY_MAPPED_VIEW_ADDRESS,
+    CreateFileMappingA, MapViewOfFile, OpenFileMappingA, UnmapViewOfFile, VirtualQuery,
+    FILE_MAP_ALL_ACCESS, FILE_MAP_READ, MEMORY_BASIC_INFORMATION, MEMORY_MAPPED_VIEW_ADDRESS,
+    PAGE_READWRITE,
 };
 
 /// Each sender name occupies a fixed slot of this many bytes in "SpoutSenderNames".
-const NAME_SLOT_LEN: usize = 256;
+pub(crate) const NAME_SLOT_LEN: usize = 256;
+
+/// Spout's default maximum number of senders (the list holds this many slots).
+pub(crate) const MAX_SENDERS: usize = 64;
 
 /// Layout of the per-sender record, copied from Spout2's C++ `SharedTextureInfo`.
 /// `#[repr(C)]` tells Rust to lay it out in memory exactly like C/C++ would.
@@ -36,17 +40,47 @@ pub struct SharedTextureInfo {
     pub partner_id: u32,        // unused by us
 }
 
-/// A read-only view of a named shared-memory block.
+/// A view of a named shared-memory block (read-only via `open`, read-write via `create`).
 /// When this value goes out of scope, `Drop` below releases the Windows resources.
-struct SharedMemory {
+/// `pub(crate)` = usable by other files in this library, but not from outside it.
+pub(crate) struct SharedMemory {
     handle: HANDLE,
     view: MEMORY_MAPPED_VIEW_ADDRESS,
     len: usize,
 }
 
 impl SharedMemory {
+    /// Create the block called `name` (or open it read-write if it already exists).
+    pub(crate) fn create(name: &str, size: usize) -> Option<SharedMemory> {
+        let c_name = CString::new(name).ok()?;
+        unsafe {
+            let handle = CreateFileMappingA(
+                INVALID_HANDLE_VALUE, // backed by memory, not a file
+                None,
+                PAGE_READWRITE,
+                0,
+                size as u32,
+                PCSTR(c_name.as_ptr() as *const u8),
+            )
+            .ok()?;
+            let view = MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, 0);
+            if view.Value.is_null() {
+                let _ = CloseHandle(handle);
+                return None;
+            }
+            let mut info = MEMORY_BASIC_INFORMATION::default();
+            VirtualQuery(Some(view.Value), &mut info, size_of::<MEMORY_BASIC_INFORMATION>());
+            Some(SharedMemory { handle, view, len: info.RegionSize })
+        }
+    }
+
+    /// The block's contents as a writable byte slice (only valid for `create`d blocks).
+    pub(crate) fn bytes_mut(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.view.Value as *mut u8, self.len) }
+    }
+
     /// Open the shared-memory block called `name`. Returns `None` if it doesn't exist.
-    fn open(name: &str) -> Option<SharedMemory> {
+    pub(crate) fn open(name: &str) -> Option<SharedMemory> {
         // Windows wants a C-style string (ends with a zero byte).
         let c_name = CString::new(name).ok()?;
 
@@ -72,7 +106,7 @@ impl SharedMemory {
     }
 
     /// The block's contents as a byte slice.
-    fn bytes(&self) -> &[u8] {
+    pub(crate) fn bytes(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.view.Value as *const u8, self.len) }
     }
 }
