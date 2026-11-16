@@ -112,7 +112,11 @@ Progress:
 - ✅ One-way P2P on one PC (`collab host "<sender>"` / `collab join`): copy-paste invite/reply codes
   (~1000 chars, deflate + base64, prefix `VTC1-`), `webrtcbin` with Google STUN, jitter buffer 50 ms.
   60 fps sent and received; guest publishes Spout2 "Collab - <name>" with transparency. Clean exit on Enter.
-- ⬜ Two-way P2P on one PC.
+- ✅ Two-way P2P on one PC (`collab host|join "<sender>" [--name X]`): both send and receive,
+  Spout2 "Collab - <partner>" on each side, correct transparency. Encoder fallback: NVIDIA → AMD → Media Foundation.
+  **Problem:** ~3 CPU cores per copy (CPU pack, `videoconvert`, CPU unpack); two copies on one PC reach only
+  ~46 fps sent / ~35 received. Tried `d3d11convert` on receive: shifted alpha levels and was slower — reverted.
+- ⬜ Cut CPU use: GPU shaders for pack (→ NV12) and unpack (→ straight into the Spout texture). Target < 1 core.
 - ⬜ Test bundle (collab.exe + only the needed GStreamer DLLs), verified with GStreamer hidden from PATH.
 - ⬜ Two-PC test over the internet; measure end-to-end latency.
 
