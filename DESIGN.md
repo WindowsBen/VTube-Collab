@@ -88,6 +88,8 @@ Progress:
 - ✅ Grab one frame from a Spout2 sender with transparency (`cargo run -- grab "<name>"`).
   Verified with Avatar Live. Note: Avatar Live leaves a faint alpha haze (1–15) over ~34% of the frame,
   likely from its post-processing; check whether disabling bloom/effects removes it.
+- ✅ Continuous capture at 60 fps (`cargo run --release -- watch "<name>" [seconds]`).
+  1920×1080 from Avatar Live: avg 2.24 ms per grab (99% under 3.68 ms) vs 16.67 ms budget, 0 late frames.
 
 ### Setup steps (in order)
 1. ✅ Write this design document

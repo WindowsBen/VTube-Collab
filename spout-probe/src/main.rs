@@ -3,10 +3,13 @@
 //! Usage:
 //!   cargo run                         list all senders
 //!   cargo run -- grab "Avatar Live"   save one frame as captures\Avatar Live.png
+//!   cargo run --release -- watch "Avatar Live" 10
+//!                                     capture at 60 fps for 10 s and report timing
 
-// `mod` pulls in the code from src\spout.rs and src\grab.rs.
+// `mod` pulls in the code from src\spout.rs, src\grab.rs and src\watch.rs.
 mod grab;
 mod spout;
+mod watch;
 
 use std::path::PathBuf;
 
@@ -19,6 +22,14 @@ fn main() {
         Some("grab") => match args.get(1) {
             Some(name) => grab_sender(name),
             None => eprintln!("Usage: cargo run -- grab \"<sender name>\""),
+        },
+        Some("watch") => match args.get(1) {
+            Some(name) => {
+                // Optional 3rd word = seconds; default 10. `parse` turns text into a number.
+                let seconds = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10);
+                watch::watch(name, seconds);
+            }
+            None => eprintln!("Usage: cargo run --release -- watch \"<sender name>\" [seconds]"),
         },
         Some(other) => eprintln!("Unknown command: {other}"),
     }
