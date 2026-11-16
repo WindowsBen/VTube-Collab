@@ -82,14 +82,19 @@ Rough upload need per person (~3 Mbps per 720p30 stream with transparency):
 - macOS support.
 - Volunteer hub for large rooms.
 
-## 6. Open questions
+## 6. Known issues (may revisit)
+- **Host received only ~50–55 fps** in the 2-PC test (2026-11-17), while the friend sent and received 60.
+  Decoder confirmed on the RTX 3060 (not the AMD iGPU). Likely local load on the host PC, or packet loss
+  friend → host. If revisited: add packet-loss / RTT / skipped-frame stats to `[stats]`, enable NACK retransmission.
+
+## 7. Open questions
 - UI library: Slint or egui?
 - ~~Video pipeline~~ **Decided (2026-11-16): GStreamer 1.28.x** for encode/decode and WebRTC.
   Kept behind our own small "encoder" and "connection" interfaces, so parts can later be swapped
   for FFmpeg + `str0m` if app size or overhead becomes a problem. Adds ~60–100 MB of bundled DLLs.
 - Exact P2P library: `webrtc-rs`, `str0m`, or `iroh`.
 
-## 7. Roadmap
+## 8. Roadmap
 
 ### Milestone 1 — proof of concept
 Two people, Windows only: invite code → one Spout2 source in → transparent video over a direct
