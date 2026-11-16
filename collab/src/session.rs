@@ -1,10 +1,12 @@
 //! One collab connection: sends our avatar AND receives the partner's.
 //!
-//!   send:    our frames → appsrc → H.264 encoder → RTP packets → webrtcbin ─┐
-//!                                                                            │ network
-//!   receive: webrtcbin → RTP → H.264 decoder → appsink → Spout thread → OBS ┘
+//!   send:    Spout texture → [GPU pack → NV12] → appsrc → H.264 encoder → RTP → webrtcbin ─┐
+//!                                                                                           │ network
+//!   receive: webrtcbin → RTP → H.264 decoder → NV12 → appsink → [GPU unpack] → Spout → OBS ┘
 //!
-//! Host and guest use the same Session; they only differ in who makes the offer.
+//! The pixel work happens on the graphics card (vtc_core::gpu); the CPU only copies
+//! compact NV12 frames. Host and guest use the same Session; they only differ in who
+//! makes the offer.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -12,13 +14,13 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use gst::prelude::*;
 use gstreamer as gst;
 use gstreamer_app as gst_app;
 use gstreamer_video as gst_video;
+// The video "prelude" includes GStreamer's general one, plus video-frame methods like plane_stride().
+use gstreamer_video::prelude::*;
 
-use vtc_core::grab::Grabber;
-use vtc_core::packing::{pack_into, unpack};
+use vtc_core::gpu::{Nv12Layout, Packer, Unpacker};
 use vtc_core::sender::SpoutSender;
 use vtc_core::spout;
 
@@ -29,13 +31,23 @@ use crate::peer::{self, Error};
 pub const FPS: u64 = 60;
 const BITRATE_KBPS: u32 = 8000;
 
-/// A decoded frame on its way to the Spout thread: (pixels, row stride, width, height).
-type Frame = (Vec<u8>, usize, usize, usize);
+/// A decoded packed frame on its way to the Spout thread: the two NV12 planes.
+struct Frame {
+    y: Vec<u8>,
+    y_stride: usize,
+    uv: Vec<u8>,
+    uv_stride: usize,
+    /// Avatar size (the packed frame is twice as wide).
+    w: usize,
+    h: usize,
+}
 
 pub struct Session {
     pipeline: gst::Pipeline,
     pub webrtc: gst::Element,
     appsrc: gst_app::AppSrc,
+    /// Memory layout of the packed NV12 frames we send.
+    send_info: gst_video::VideoInfo,
     gatherer: Option<peer::Gatherer>,
     received: Arc<AtomicU64>,
     partner: Arc<Mutex<String>>,
@@ -49,15 +61,21 @@ impl Session {
         let enc = encoder::pick(BITRATE_KBPS, FPS)?;
         println!("Encoder: {}", enc.label);
 
+        // We send packed NV12 frames (twice the avatar width) in BT.709 limited range,
+        // exactly what the GPU pack shader produces.
+        let send_info = gst_video::VideoInfo::builder(gst_video::VideoFormat::Nv12, (w * 2) as u32, h as u32)
+            .fps(gst::Fraction::new(FPS as i32, 1))
+            .colorimetry(&"bt709".parse()?)
+            .build()?;
+        let caps = send_info.to_caps()?;
+
         let text = format!(
-            "appsrc name=src is-live=true format=time \
-                 caps=video/x-raw,format=RGBA,width={pw},height={h},framerate={FPS}/1 \
+            "appsrc name=src is-live=true format=time caps=\"{caps}\" \
              ! {enc} \
              ! h264parse config-interval=-1 \
              ! rtph264pay config-interval=-1 aggregate-mode=zero-latency pt=96 \
              ! application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000 \
              ! webrtcbin name=webrtc bundle-policy=max-bundle stun-server={stun} latency=50",
-            pw = w * 2,
             enc = enc.pipeline,
             stun = peer::STUN_SERVER,
         );
@@ -89,6 +107,7 @@ impl Session {
             pipeline,
             webrtc,
             appsrc,
+            send_info,
             gatherer: Some(gatherer),
             received,
             partner,
@@ -108,15 +127,22 @@ impl Session {
     }
 
     /// Capture, send and report until Enter is pressed, then shut down cleanly.
-    pub fn run(mut self, sender_name: &str, mut grabber: Grabber) -> Result<(), Error> {
-        let (w, h) = (grabber.width as usize, grabber.height as usize);
+    pub fn run(mut self, sender_name: &str, mut packer: Packer) -> Result<(), Error> {
+        let (w, h) = (packer.width, packer.height);
         println!("Sending \"{sender_name}\" ({w}×{h}). Press Enter to stop.");
         let enter = console::stop_on_enter();
+
+        let layout = Nv12Layout {
+            y_offset: self.send_info.offset()[0],
+            y_stride: self.send_info.stride()[0] as usize,
+            uv_offset: self.send_info.offset()[1],
+            uv_stride: self.send_info.stride()[1] as usize,
+        };
+        let frame_size = self.send_info.size();
 
         let frame_ns = 1_000_000_000 / FPS;
         let frame_interval = Duration::from_nanos(frame_ns);
         let start = Instant::now();
-        let mut rgba = Vec::new();
         let (mut sent, mut last_sent, mut last_received) = (0u64, 0u64, 0u64);
         let mut last_report = Instant::now();
 
@@ -125,26 +151,24 @@ impl Session {
             // If the avatar app restarted, reopen it (size must stay the same for now).
             if i % FPS == 0 {
                 if let Some(now) = spout::read_sender_info(sender_name) {
-                    if now.share_handle != grabber.share_handle {
-                        let g = Grabber::open(&now)?;
-                        if (g.width as usize, g.height as usize) != (w, h) {
+                    if now.share_handle != packer.share_handle {
+                        let p = Packer::open(&now)?;
+                        if (p.width, p.height) != (w, h) {
                             return Err("the avatar's resolution changed; restart collab".into());
                         }
-                        grabber = g;
+                        packer = p;
                     }
                 }
             }
 
-            grabber.grab(&mut rgba)?;
-            // Ask GStreamer for a buffer and pack straight into it (no extra copy).
-            let mut buffer = gst::Buffer::with_size(w * 2 * h * 4)?;
+            // Ask GStreamer for a buffer and let the GPU pack straight into it.
+            let mut buffer = gst::Buffer::with_size(frame_size)?;
             {
                 let b = buffer.get_mut().ok_or("buffer not writable")?;
-                let mut map = b.map_writable()?;
-                pack_into(&rgba, w, h, &mut map);
-            }
-            {
-                let b = buffer.get_mut().ok_or("buffer not writable")?;
+                {
+                    let mut map = b.map_writable()?;
+                    packer.pack_nv12(&mut map, layout)?;
+                }
                 b.set_pts(gst::ClockTime::from_nseconds(i * frame_ns));
                 b.set_duration(gst::ClockTime::from_nseconds(frame_ns));
             }
@@ -202,12 +226,10 @@ fn attach_receiver(
         if pad.direction() != gst::PadDirection::Src {
             return;
         }
-        // d3d11h264dec decodes on any graphics card (NVIDIA, AMD or Intel).
-        // Colour conversion stays on the CPU (videoconvert): the GPU path (d3d11convert)
-        // was tried and shifted alpha levels (see-through came back as faint haze).
+        // d3d11h264dec decodes on any graphics card (NVIDIA, AMD or Intel) and hands
+        // us NV12 in normal memory; the GPU unpack shader does the rest.
         let bin = match gst::parse::bin_from_description(
-            "rtph264depay ! h264parse ! d3d11h264dec \
-             ! videoconvert n-threads=0 ! video/x-raw,format=RGBA \
+            "rtph264depay ! h264parse ! d3d11h264dec ! video/x-raw,format=NV12 \
              ! appsink name=sink sync=false max-buffers=2 drop=true",
             true,
         ) {
@@ -228,10 +250,18 @@ fn attach_receiver(
                     let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
                     let caps = sample.caps().ok_or(gst::FlowError::Error)?;
                     let info = gst_video::VideoInfo::from_caps(caps).map_err(|_| gst::FlowError::Error)?;
-                    let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
-                    // The packed frame is twice as wide as the avatar.
-                    let (w, h) = (info.width() as usize / 2, info.height() as usize);
-                    let _ = frame_tx.try_send((map.as_slice().to_vec(), info.stride()[0] as usize, w, h));
+                    // A "video frame" view knows where each plane starts and its row stride.
+                    let frame = gst_video::VideoFrameRef::from_buffer_ref_readable(buffer, &info)
+                        .map_err(|_| gst::FlowError::Error)?;
+                    let msg = Frame {
+                        y: frame.plane_data(0).map_err(|_| gst::FlowError::Error)?.to_vec(),
+                        y_stride: frame.plane_stride()[0] as usize,
+                        uv: frame.plane_data(1).map_err(|_| gst::FlowError::Error)?.to_vec(),
+                        uv_stride: frame.plane_stride()[1] as usize,
+                        w: info.width() as usize / 2,
+                        h: info.height() as usize,
+                    };
+                    let _ = frame_tx.try_send(msg);
                     received.fetch_add(1, Ordering::Relaxed);
                     Ok(gst::FlowSuccess::Ok)
                 })
@@ -249,7 +279,7 @@ fn attach_receiver(
     });
 }
 
-/// Unpacks received frames and publishes them as Spout2 "Collab - <partner>".
+/// Unpacks received frames on the GPU, straight into Spout2 "Collab - <partner>".
 /// The Spout source is created on the first frame (that's when we know the size).
 fn spawn_spout_thread(
     frame_rx: mpsc::Receiver<Frame>,
@@ -257,21 +287,26 @@ fn spawn_spout_thread(
     stop: Arc<AtomicBool>,
 ) -> JoinHandle<Result<(), String>> {
     std::thread::spawn(move || {
-        let mut sender: Option<SpoutSender> = None;
+        // (sender, unpacker) — created together, on the same GPU device.
+        let mut out: Option<(SpoutSender, Unpacker)> = None;
         // Check the stop flag at least every 100 ms, so we always exit when asked.
         while !stop.load(Ordering::Relaxed) {
-            let (packed, stride, w, h) = match frame_rx.recv_timeout(Duration::from_millis(100)) {
+            let f = match frame_rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(frame) => frame,
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             };
-            if sender.is_none() {
+            if out.is_none() {
                 let name = format!("Collab - {}", partner.lock().unwrap());
-                sender = Some(SpoutSender::new(&name, w as u32, h as u32).map_err(|e| e.to_string())?);
-                println!("[spout] publishing \"{name}\" ({w}×{h}) — add it in OBS with Spout2 Capture");
+                let sender = SpoutSender::new(&name, f.w as u32, f.h as u32).map_err(|e| e.to_string())?;
+                let unpacker = Unpacker::new(sender.device(), f.w as u32, f.h as u32).map_err(|e| e.to_string())?;
+                println!("[spout] publishing \"{name}\" ({}×{}) — add it in OBS with Spout2 Capture", f.w, f.h);
+                out = Some((sender, unpacker));
             }
-            let rgba = unpack(&packed, stride, w, h);
-            sender.as_mut().unwrap().send(&rgba).map_err(|e| e.to_string())?;
+            let (sender, unpacker) = out.as_mut().unwrap();
+            sender
+                .render(|ctx, target| unpacker.unpack(ctx, target, &f.y, f.y_stride, &f.uv, f.uv_stride))
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
     })

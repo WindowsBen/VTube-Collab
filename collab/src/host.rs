@@ -3,7 +3,7 @@
 use gstreamer as gst;
 use gstreamer_webrtc as gst_webrtc;
 
-use vtc_core::grab::Grabber;
+use vtc_core::gpu::Packer;
 use vtc_core::spout;
 
 use crate::peer::{self, Error};
@@ -32,10 +32,10 @@ pub fn run(sender_name: &str, my_name: &str) -> Result<(), Error> {
     session.run(sender_name, grabber)
 }
 
-/// Open our avatar's Spout2 sender, with a helpful message if it isn't running.
-pub fn open_avatar(sender_name: &str) -> Result<Grabber, Error> {
+/// Open our avatar's Spout2 sender for GPU packing, with a helpful message if it isn't running.
+pub fn open_avatar(sender_name: &str) -> Result<Packer, Error> {
     let info = spout::read_sender_info(sender_name).ok_or_else(|| {
         format!("No Spout2 sender called \"{sender_name}\". Is your VTubing app running with Spout2 output on?")
     })?;
-    Ok(Grabber::open(&info)?)
+    Ok(Packer::open(&info)?)
 }

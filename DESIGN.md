@@ -116,7 +116,11 @@ Progress:
   Spout2 "Collab - <partner>" on each side, correct transparency. Encoder fallback: NVIDIA → AMD → Media Foundation.
   **Problem:** ~3 CPU cores per copy (CPU pack, `videoconvert`, CPU unpack); two copies on one PC reach only
   ~46 fps sent / ~35 received. Tried `d3d11convert` on receive: shifted alpha levels and was slower — reverted.
-- ⬜ Cut CPU use: GPU shaders for pack (→ NV12) and unpack (→ straight into the Spout texture). Target < 1 core.
+- ✅ Cut CPU use: GPU shaders (`vtc-core/src/shaders.hlsl`, `gpu.rs`) pack the avatar to NV12 (BT.709 limited)
+  and unpack straight into the Spout texture. Two-way on one PC: 60 fps both ways, ~150% of one core per copy
+  (was ~300%), whole PC 50% (was 84%). Solid alpha now exactly 255; alpha ≤2 snapped to 0.
+  Not yet < 1 core: remaining cost is CPU↔GPU copies (readback for encoder, decoder download, upload).
+  Later: zero-copy via GStreamer D3D12 (`gstreamer-d3d12` bindings exist) or double-buffered readback.
 - ⬜ Test bundle (collab.exe + only the needed GStreamer DLLs), verified with GStreamer hidden from PATH.
 - ⬜ Two-PC test over the internet; measure end-to-end latency.
 

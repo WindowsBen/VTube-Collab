@@ -3,8 +3,10 @@
 //!   spout   — reading Spout2's list of senders and their details
 //!   grab    — capturing frames from a Spout2 sender (GPU → memory)
 //!   sender  — publishing our own Spout2 sender (memory → GPU → OBS)
-//!   packing — colour + alpha side by side, so transparency survives H.264
+//!   packing — colour + alpha side by side, so transparency survives H.264 (CPU version)
+//!   gpu     — the same packing/unpacking done on the graphics card (much less CPU)
 
+pub mod gpu;
 pub mod grab;
 pub mod packing;
 pub mod sender;

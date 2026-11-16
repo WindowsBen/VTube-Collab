@@ -17,7 +17,7 @@ use std::mem::size_of;
 use windows::core::{Interface, PCSTR, Result};
 use windows::Win32::Foundation::{CloseHandle, E_FAIL, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0};
 use windows::Win32::Graphics::Direct3D11::{
-    ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_BIND_RENDER_TARGET,
+    ID3D11Device, ID3D11DeviceContext, ID3D11RenderTargetView, ID3D11Texture2D, D3D11_BIND_RENDER_TARGET,
     D3D11_BIND_SHADER_RESOURCE, D3D11_RESOURCE_MISC_SHARED, D3D11_TEXTURE2D_DESC,
     D3D11_USAGE_DEFAULT,
 };
@@ -75,9 +75,11 @@ pub struct SpoutSender {
     name: String,
     width: u32,
     height: u32,
-    _device: ID3D11Device,
+    device: ID3D11Device,
     context: ID3D11DeviceContext,
     texture: ID3D11Texture2D,
+    /// Lets the GPU draw directly into our shared texture (used by gpu::Unpacker).
+    target: ID3D11RenderTargetView,
     access_lock: NamedMutex,
     // Kept alive so the sender stays visible; Windows deletes these blocks when closed.
     _info_mem: SharedMemory,
@@ -149,13 +151,16 @@ impl SpoutSender {
 
         let access_lock = NamedMutex::new(&format!("{name}_SpoutAccessMutex"))?;
 
+        let target = crate::gpu::rtv(&device, &texture)?;
+
         Ok(SpoutSender {
             name: name.to_string(),
             width,
             height,
-            _device: device,
+            device,
             context,
             texture,
+            target,
             access_lock,
             _info_mem: info_mem,
             _info_lock: info_lock,
@@ -178,6 +183,30 @@ impl SpoutSender {
             // Make sure the GPU has the new pixels before we release the lock.
             self.context.Flush();
         }
+        Ok(())
+    }
+}
+
+impl SpoutSender {
+    /// The GPU connection this sender's texture lives on. GPU work that draws into
+    /// the texture (e.g. gpu::Unpacker) must be created on this same device.
+    pub fn device(&self) -> &ID3D11Device {
+        &self.device
+    }
+
+    /// Let `draw` render directly into the shared texture, under Spout's access lock.
+    /// `draw` gets the GPU command context and the texture's render target.
+    pub fn render(
+        &mut self,
+        draw: impl FnOnce(&ID3D11DeviceContext, &ID3D11RenderTargetView) -> Result<()>,
+    ) -> Result<()> {
+        // If a receiver holds the lock for more than ~1 frame, skip this frame.
+        let Some(_guard) = self.access_lock.lock(16) else {
+            return Ok(());
+        };
+        draw(&self.context, &self.target)?;
+        // Make sure the GPU has finished before we release the lock.
+        unsafe { self.context.Flush() };
         Ok(())
     }
 }
