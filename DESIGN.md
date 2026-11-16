@@ -121,8 +121,13 @@ Progress:
   (was ~300%), whole PC 50% (was 84%). Solid alpha now exactly 255; alpha ≤2 snapped to 0.
   Not yet < 1 core: remaining cost is CPU↔GPU copies (readback for encoder, decoder download, upload).
   Later: zero-copy via GStreamer D3D12 (`gstreamer-d3d12` bindings exist) or double-buffered readback.
-- ⬜ Test bundle (collab.exe + only the needed GStreamer DLLs), verified with GStreamer hidden from PATH.
-- ⬜ Two-PC test over the internet; measure end-to-end latency.
+- ✅ Test bundle (`tools/make-bundle.ps1` → `dist/VTubeCollab-test.zip`, 12.2 MB): collab.exe + 45 GStreamer DLLs
+  (found via `dumpbin /dependents`) + 15 plugins + MSVC runtime + licences. Verified with GStreamer hidden from
+  PATH: all plugins loaded from the bundle. Friends must "Unblock" the zip; unsigned exe → SmartScreen warning.
+- ✅ Two-PC test over the internet (2026-11-17): host (Avatar Live, NVIDIA) ↔ guest (Warudo), both saw each
+  other's Spout source in OBS. Latency not measured yet.
+- Usability notes from the test: users need to know their exact Spout sender name (consider `collab list`);
+  README placeholders `<...>` were typed literally.
 
 Code layout: `vtc-core/` (shared: Spout capture/output, packing), `collab/` (the app),
 `spout-probe/` and `encode-test/` (test tools).
