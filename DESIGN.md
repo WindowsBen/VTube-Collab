@@ -101,6 +101,11 @@ Progress:
   likely from its post-processing; check whether disabling bloom/effects removes it.
 - ✅ Continuous capture at 60 fps (`cargo run --release -- watch "<name>" [seconds]`).
   1920×1080 from Avatar Live: avg 2.24 ms per grab (99% under 3.68 ms) vs 16.67 ms budget, 0 late frames.
+- ✅ Local encode/decode loopback (`encode-test/`): colour + alpha packed side by side (3840×1080),
+  `nvh264enc` (p1, ultra-low-latency, CBR) → `nvh264dec`. At 8 Mbit/s: capture→decoded avg 17.4 ms
+  (99% under 23.8 ms), ~25 ms incl. capture + packing. Alpha avg error 0.4/255, no new haze.
+  Colour PSNR 33.7 dB (34.9 dB at 16 Mbit/s) — limited by 4:2:0 chroma, not bitrate.
+  Later: pack/convert on the GPU (saves ~8–10 ms); consider 4:4:4 or HEVC for sharper colour.
 
 ### Setup steps (in order)
 1. ✅ Write this design document

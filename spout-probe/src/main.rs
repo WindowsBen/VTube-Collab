@@ -6,9 +6,9 @@
 //!   cargo run --release -- watch "Avatar Live" 10
 //!                                     capture at 60 fps for 10 s and report timing
 
-// `mod` pulls in the code from src\spout.rs, src\grab.rs and src\watch.rs.
-mod grab;
-mod spout;
+// spout.rs and grab.rs now live in the library part (src\lib.rs) so other programs
+// can share them; `use` brings them in here. `mod` pulls in src\watch.rs.
+use spout_probe::{grab, spout};
 mod watch;
 
 use std::path::PathBuf;
