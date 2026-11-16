@@ -27,6 +27,7 @@ source in OBS.
 | Audio | **Not carried.** Voice stays in Discord etc. Per-partner **delay slider** for lip-sync |
 | Networking | Peer-to-peer (WebRTC-style direct connections) |
 | Handshake | Small handshake-only server on a **free tier** (Cloudflare Workers), with **invite codes** as a no-server backup |
+| Video pipeline | **GStreamer** (hardware encoding for NVIDIA/AMD/Intel, built-in WebRTC), behind our own interfaces |
 | Relay fallback | Allowed for users whose networks block direct connections, as long as it costs nothing (check Cloudflare's relay free allowance before relying on it) |
 
 ## 4. How it works (high level)
@@ -65,6 +66,15 @@ Rough upload need per person (~3 Mbps per 720p30 stream with transparency):
 - **Phase 1:** each partner is published as its own **Spout2 source**. OBS picks it up with the Spout2 plugin.
 - **Later:** possibly a native OBS plugin for smoother setup.
 
+### 4.4 Dev machine notes
+- GStreamer 1.28.8 installed per-user at `%LOCALAPPDATA%\Programs\gstreamer\1.0\msvc_x86_64`
+  (`bin` on PATH, `PKG_CONFIG_PATH` → `lib\pkgconfig`).
+- Available: `webrtcbin`, NVIDIA (`nvh264enc`, `nvd3d11h264enc`, `nvh265enc`), AMD (`amfh264enc`),
+  Media Foundation (`mfh264enc`), D3D11 upload/convert/decode. No Intel QSV (no Intel GPU).
+- **Two GPUs** (AMD integrated + NVIDIA RTX 3060). A Spout2 shared texture can only be opened on
+  the GPU the sender renders on. The default adapter happened to match, but the app must pick the
+  adapter explicitly (match the sender's GPU) on multi-GPU PCs.
+
 ## 5. Ideas parked for later
 - Sending **tracking data only** (VMC protocol) for 3D users: tiny bandwidth, but the partner
   needs the model file (licensing concerns).
@@ -74,8 +84,9 @@ Rough upload need per person (~3 Mbps per 720p30 stream with transparency):
 
 ## 6. Open questions
 - UI library: Slint or egui?
-- Video pipeline: GStreamer (faster to build, heavier) vs. custom (`str0m` + hardware encoders)?
-  Leaning toward GStreamer for the first version.
+- ~~Video pipeline~~ **Decided (2026-11-16): GStreamer 1.28.x** for encode/decode and WebRTC.
+  Kept behind our own small "encoder" and "connection" interfaces, so parts can later be swapped
+  for FFmpeg + `str0m` if app size or overhead becomes a problem. Adds ~60–100 MB of bundled DLLs.
 - Exact P2P library: `webrtc-rs`, `str0m`, or `iroh`.
 
 ## 7. Roadmap
