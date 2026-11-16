@@ -88,4 +88,4 @@ connection → one Spout2 source out into OBS. Proves latency and transparency.
 1. ✅ Write this design document
 2. ✅ Install the Rust toolchain (`rustup`) — already present: Rust 1.97.1 (msvc) + VS Build Tools 2026
 3. ✅ Set up a local git repository (never pushed by Claude)
-4. ⬜ First program: list the Spout2 sources on this PC
+4. ✅ First program: list the Spout2 sources on this PC (`spout-probe/`) — verified with Avatar Live (1920×1080, RGBA 8-bit)
