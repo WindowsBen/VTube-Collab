@@ -78,6 +78,7 @@ fn print_events() -> EventSink {
         ),
         Event::PartnerVideo => println!("[video] partner's stream started"),
         Event::Publishing(name) => println!("[spout] publishing \"{name}\" — add it in OBS with Spout2 Capture"),
+        Event::GroupPublishing(name) => println!("[spout] publishing group source \"{name}\" (everyone stacked)"),
         Event::Stats { sent_fps, received_fps } => {
             println!("[stats] sent {sent_fps:.1} fps | received {received_fps:.1} fps")
         }

@@ -32,18 +32,18 @@ use crate::spout::{c_bytes_to_string, SharedMemory, SharedTextureInfo, MAX_SENDE
 const SENDER_LIST: &str = "SpoutSenderNames";
 
 /// A named lock shared between programs. Unlocks automatically via `MutexGuard`.
-struct NamedMutex(HANDLE);
+pub(crate) struct NamedMutex(HANDLE);
 
 impl NamedMutex {
     /// Create the lock, or open it if another program already made it.
-    fn new(name: &str) -> Result<NamedMutex> {
+    pub(crate) fn new(name: &str) -> Result<NamedMutex> {
         let c_name = CString::new(name).map_err(|_| windows::core::Error::from(E_FAIL))?;
         let handle = unsafe { CreateMutexA(None, false, PCSTR(c_name.as_ptr() as *const u8))? };
         Ok(NamedMutex(handle))
     }
 
     /// Wait up to `ms` milliseconds for the lock. `None` = timed out.
-    fn lock(&self, ms: u32) -> Option<MutexGuard<'_>> {
+    pub(crate) fn lock(&self, ms: u32) -> Option<MutexGuard<'_>> {
         let r = unsafe { WaitForSingleObject(self.0, ms) };
         // WAIT_ABANDONED = the previous owner crashed while holding it; we own it now.
         (r == WAIT_OBJECT_0 || r == WAIT_ABANDONED).then_some(MutexGuard(self))
@@ -60,7 +60,7 @@ impl Drop for NamedMutex {
 
 /// Holding one of these = holding the lock. Dropping it unlocks.
 /// The `'a` ("lifetime") tells Rust the guard can't outlive the mutex it came from.
-struct MutexGuard<'a>(&'a NamedMutex);
+pub(crate) struct MutexGuard<'a>(&'a NamedMutex);
 
 impl Drop for MutexGuard<'_> {
     fn drop(&mut self) {
@@ -188,6 +188,11 @@ impl SpoutSender {
 }
 
 impl SpoutSender {
+    /// The name this source is published under.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     /// The GPU connection this sender's texture lives on. GPU work that draws into
     /// the texture (e.g. gpu::Unpacker) must be created on this same device.
     pub fn device(&self) -> &ID3D11Device {
@@ -218,6 +223,16 @@ impl Drop for SpoutSender {
             names.remove(&name);
         });
     }
+}
+
+/// `base`, or "base 2", "base 3"... — the first name no running Spout sender uses.
+/// (Two copies of the app on one PC must not publish under the same name.)
+pub fn unused_name(base: &str) -> String {
+    let taken = |n: &str| crate::spout::read_sender_info(n).is_some();
+    if !taken(base) {
+        return base.to_string();
+    }
+    (2..).map(|i| format!("{base} {i}")).find(|n| !taken(n)).expect("some number is free")
 }
 
 /// Read Spout's sender list, let `change` edit it, and write it back — all under Spout's lock.

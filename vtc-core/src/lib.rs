@@ -6,6 +6,7 @@
 //!   packing — colour + alpha side by side, so transparency survives H.264 (CPU version)
 //!   gpu     — the same packing/unpacking done on the graphics card (much less CPU)
 
+pub mod compositor;
 pub mod gpu;
 pub mod grab;
 pub mod packing;

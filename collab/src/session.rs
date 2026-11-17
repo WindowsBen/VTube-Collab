@@ -26,6 +26,7 @@ use vtc_core::spout;
 
 use crate::encoder;
 use crate::events::{Event, EventSink};
+use crate::group::{self, GroupLayers};
 use crate::peer::{self, Error};
 
 pub const FPS: u64 = 60;
@@ -53,6 +54,10 @@ pub struct Session {
     partner: Arc<Mutex<String>>,
     spout_stop: Arc<AtomicBool>,
     spout_thread: Option<JoinHandle<Result<(), String>>>,
+    /// Layer order/visibility for the group source, shared with the app window.
+    pub group_layers: GroupLayers,
+    group_stop: Arc<AtomicBool>,
+    group_thread: Option<JoinHandle<()>>,
     events: EventSink,
 }
 
@@ -114,6 +119,9 @@ impl Session {
             partner,
             spout_stop,
             spout_thread: Some(spout_thread),
+            group_layers: GroupLayers::default(),
+            group_stop: Arc::new(AtomicBool::new(false)),
+            group_thread: None,
             events,
         })
     }
@@ -129,7 +137,13 @@ impl Session {
     }
 
     /// Capture, send and report until `stop` becomes true, then shut down cleanly.
-    pub fn run(mut self, sender_name: &str, packer: Packer, stop: &AtomicBool) -> Result<(), Error> {
+    /// `my_name` labels your own layer in the group source.
+    pub fn run(mut self, sender_name: &str, my_name: &str, packer: Packer, stop: &AtomicBool) -> Result<(), Error> {
+        // Start the group source: partner in front of you by default.
+        let partner = self.partner.lock().unwrap().clone();
+        *self.group_layers.lock().unwrap() = group::default_layers(my_name, sender_name, &partner);
+        self.group_thread = Some(group::spawn(self.group_layers.clone(), self.group_stop.clone(), self.events.clone()));
+
         let result = self.send_loop(sender_name, packer, stop);
         self.shutdown(); // always clean up (removes our Spout source), even after an error
         result
@@ -204,7 +218,12 @@ impl Session {
     }
 
     fn shutdown(&mut self) {
-        // Stop the Spout thread first: it removes our partner's source from OBS's list.
+        // Stop the group source first (it reads the partner's source), then the
+        // partner's source. Each removes its name from OBS's Spout list.
+        self.group_stop.store(true, Ordering::Relaxed);
+        if let Some(t) = self.group_thread.take() {
+            let _ = t.join();
+        }
         self.spout_stop.store(true, Ordering::Relaxed);
         if let Some(t) = self.spout_thread.take() {
             match t.join() {
@@ -311,7 +330,7 @@ fn spawn_spout_thread(
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             };
             if out.is_none() {
-                let name = format!("Collab - {}", partner.lock().unwrap());
+                let name = group::partner_source(&partner.lock().unwrap());
                 let sender = SpoutSender::new(&name, f.w as u32, f.h as u32).map_err(|e| e.to_string())?;
                 let unpacker = Unpacker::new(sender.device(), f.w as u32, f.h as u32).map_err(|e| e.to_string())?;
                 events(Event::Publishing(name));

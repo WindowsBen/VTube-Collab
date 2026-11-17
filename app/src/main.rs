@@ -18,7 +18,7 @@ use eframe::egui::{self, Color32, Rect, RichText, UiBuilder, pos2, vec2};
 use theme::colour;
 use worker::{FromWorker, ToWorker, Worker};
 
-const WINDOW_SIZE: [f32; 2] = [480.0, 440.0];
+const WINDOW_SIZE: [f32; 2] = [480.0, 520.0];
 const STATUS_BAR_HEIGHT: f32 = 22.0;
 
 fn main() -> eframe::Result {
@@ -82,6 +82,9 @@ struct App {
     status: String,
     connection: Option<ConnState>,
     publishing: Option<String>,
+    /// Group source: its published name, and the shared layer list (top first).
+    group_name: Option<String>,
+    group_layers: Option<collab::GroupLayers>,
     stats: Option<(f64, f64)>,
     copied_at: Option<Instant>,
     setup_error: Option<String>,
@@ -101,6 +104,8 @@ impl App {
             status: "Ready.".into(),
             connection: None,
             publishing: None,
+            group_name: None,
+            group_layers: None,
             stats: None,
             copied_at: None,
             setup_error: None,
@@ -118,6 +123,8 @@ impl App {
     fn clear_connection_info(&mut self) {
         self.connection = None;
         self.publishing = None;
+        self.group_name = None;
+        self.group_layers = None;
         self.stats = None;
     }
 
@@ -185,6 +192,7 @@ impl App {
                     }
                     self.status = format!("Reply code ready. Send it back to {partner}.");
                 }
+                FromWorker::Group(layers) => self.group_layers = Some(layers),
                 FromWorker::ReplySent(partner) => {
                     if let Screen::Join { waiting_for, .. } = &mut self.screen {
                         *waiting_for = Some(partner.clone());
@@ -237,6 +245,7 @@ impl App {
             }
             Event::PartnerVideo => self.status = "Receiving your partner's avatar.".into(),
             Event::Publishing(name) => self.publishing = Some(name),
+            Event::GroupPublishing(name) => self.group_name = Some(name),
             Event::Stats { sent_fps, received_fps } => self.stats = Some((sent_fps, received_fps)),
             Event::Warning(text) => self.status = format!("Warning: {text}"),
         }
@@ -485,10 +494,61 @@ impl App {
             });
         });
 
+        ui.add_space(8.0);
+        self.layers_panel(ui);
+
         ui.add_space(10.0);
         if xp::button(ui, "Leave collab", true, false).clicked() {
             self.reset("You left the collab.");
         }
+    }
+}
+
+impl App {
+    /// The group source's layers, photo-editor style: top layer first, a checkbox to
+    /// show/hide each one (your own row = "include me"), arrows to change the order.
+    /// Changes go straight into the shared list; the group source updates next frame.
+    fn layers_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(layers) = &self.group_layers else { return };
+        let name = self.group_name.clone().unwrap_or_else(|| collab::GROUP_SOURCE.into());
+        let title = format!("Group source: {name}");
+
+        xp::group(ui, &title, |ui| {
+            let mut list = layers.lock().unwrap();
+            if list.is_empty() {
+                ui.label("Starting...");
+                return;
+            }
+            let count = list.len();
+            let mut move_up: Option<usize> = None;
+            let mut move_down: Option<usize> = None;
+            for (i, layer) in list.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut layer.visible, "");
+                    let text = RichText::new(&layer.label);
+                    let text = if layer.visible { text } else { text.color(colour::TEXT_DISABLED) };
+                    let label_width = ui.available_width() - 2.0 * 22.0 - 12.0;
+                    ui.add_sized([label_width, 20.0], egui::Label::new(text).truncate());
+                    if xp::arrow_button(ui, true, i > 0).on_hover_text("Move up (in front)").clicked() {
+                        move_up = Some(i);
+                    }
+                    if xp::arrow_button(ui, false, i + 1 < count).on_hover_text("Move down (behind)").clicked() {
+                        move_down = Some(i);
+                    }
+                });
+            }
+            if let Some(i) = move_up {
+                list.swap(i, i - 1);
+            }
+            if let Some(i) = move_down {
+                list.swap(i, i + 1);
+            }
+            ui.label(
+                RichText::new("Top of the list = in front. Untick to hide (untick yourself to leave you out).")
+                    .size(11.0)
+                    .color(colour::TEXT_DISABLED),
+            );
+        });
     }
 }
 

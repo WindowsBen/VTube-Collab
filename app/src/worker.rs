@@ -41,6 +41,8 @@ pub enum FromWorker {
     Reply { code: String, partner: String },
     /// Guest (room code): reply delivered automatically; connecting to this partner.
     ReplySent(String),
+    /// The group source's layer list, for the layers panel.
+    Group(collab::GroupLayers),
     /// The connection ended (`Some(message)` if because of an error).
     Ended(Option<String>),
 }
@@ -107,6 +109,7 @@ impl Worker {
                     }
                 }
             }
+            send(FromWorker::Group(conn.group_layers()));
             conn.run(&stop)
         })
     }
@@ -127,6 +130,7 @@ impl Worker {
                 }
                 None => send(FromWorker::Reply { code: reply, partner }),
             }
+            send(FromWorker::Group(conn.group_layers()));
             conn.run(&stop)
         })
     }

@@ -86,3 +86,46 @@ float4 PSUnpack(float4 pos : SV_Position) : SV_Target
     if (a >= 253.0 / 255.0) a = 1.0;
     return float4(saturate(rgb), a);
 }
+
+// ================= GROUP SOURCE (compositor) =================
+//
+// Layers are blended one by one into an "accumulation" texture, bottom layer first,
+// in *premultiplied* form (colour already multiplied by alpha). That makes stacking
+// see-through avatars exact. A final pass converts back to normal ("straight")
+// alpha, which is what OBS expects from Spout sources.
+
+struct VOut
+{
+    float4 pos : SV_Position;
+    float2 uv  : TEXCOORD0; // 0..1 across the area being drawn
+};
+
+// Like VSFullscreen, but also tells the pixel shader where it is (0..1) in the
+// area being drawn, so a layer can be stretched to fit that area.
+VOut VSFullscreenUV(uint id : SV_VertexID)
+{
+    float2 uv = float2((id << 1) & 2, id & 2);
+    VOut o;
+    o.pos = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
+    o.uv = uv;
+    return o;
+}
+
+Texture2D<float4> layerTexture : register(t0);
+SamplerState      smoothSampler : register(s0); // blends neighbouring pixels when scaling
+
+// One layer, premultiplied. Blending (One, 1 - source alpha) stacks it on top.
+float4 PSLayer(VOut v) : SV_Target
+{
+    float4 c = layerTexture.Sample(smoothSampler, v.uv);
+    return float4(c.rgb * c.a, c.a);
+}
+
+Texture2D<float4> accumulated : register(t0);
+
+// Final pass: premultiplied → straight alpha for the Spout output.
+float4 PSResolve(float4 pos : SV_Position) : SV_Target
+{
+    float4 p = accumulated.Load(int3(pos.xy, 0));
+    return p.a > 0.0 ? float4(saturate(p.rgb / p.a), saturate(p.a)) : float4(0, 0, 0, 0);
+}

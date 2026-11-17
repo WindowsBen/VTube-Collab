@@ -34,7 +34,7 @@ pub struct Nv12Layout {
 
 /// Compile one function from shaders.hlsl. `target` = shader type and version,
 /// e.g. "ps_5_0" (pixel shader, Direct3D 11 level).
-fn compile(entry: PCSTR, target: PCSTR) -> Result<ID3DBlob> {
+pub(crate) fn compile(entry: PCSTR, target: PCSTR) -> Result<ID3DBlob> {
     let mut code: Option<ID3DBlob> = None;
     let mut errors: Option<ID3DBlob> = None;
     let result = unsafe {
@@ -60,7 +60,7 @@ fn compile(entry: PCSTR, target: PCSTR) -> Result<ID3DBlob> {
     Ok(code.unwrap())
 }
 
-fn blob_bytes(blob: &ID3DBlob) -> &[u8] {
+pub(crate) fn blob_bytes(blob: &ID3DBlob) -> &[u8] {
     unsafe { std::slice::from_raw_parts(blob.GetBufferPointer() as *const u8, blob.GetBufferSize()) }
 }
 
@@ -75,7 +75,7 @@ fn vertex_shader(device: &ID3D11Device) -> Result<ID3D11VertexShader> {
     Ok(vs.unwrap())
 }
 
-fn pixel_shader(device: &ID3D11Device, entry: PCSTR) -> Result<ID3D11PixelShader> {
+pub(crate) fn pixel_shader(device: &ID3D11Device, entry: PCSTR) -> Result<ID3D11PixelShader> {
     let code = compile(entry, s!("ps_5_0"))?;
     let mut ps = None;
     unsafe { device.CreatePixelShader(blob_bytes(&code), None, Some(&mut ps))? };
@@ -98,7 +98,7 @@ fn params_buffer(device: &ID3D11Device, avatar_width: u32) -> Result<ID3D11Buffe
 }
 
 /// A plain 2D texture. `bind` = how the GPU may use it; `staging` = CPU-readable copy.
-fn texture(device: &ID3D11Device, w: u32, h: u32, format: DXGI_FORMAT, bind: u32, staging: bool) -> Result<ID3D11Texture2D> {
+pub(crate) fn texture(device: &ID3D11Device, w: u32, h: u32, format: DXGI_FORMAT, bind: u32, staging: bool) -> Result<ID3D11Texture2D> {
     let desc = D3D11_TEXTURE2D_DESC {
         Width: w,
         Height: h,
@@ -116,7 +116,7 @@ fn texture(device: &ID3D11Device, w: u32, h: u32, format: DXGI_FORMAT, bind: u32
     Ok(tex.unwrap())
 }
 
-fn srv(device: &ID3D11Device, tex: &ID3D11Texture2D) -> Result<ID3D11ShaderResourceView> {
+pub(crate) fn srv(device: &ID3D11Device, tex: &ID3D11Texture2D) -> Result<ID3D11ShaderResourceView> {
     let mut view = None;
     unsafe { device.CreateShaderResourceView(tex, None, Some(&mut view))? };
     Ok(view.unwrap())
@@ -284,6 +284,9 @@ mod tests {
             (s!("PSPackLuma"), s!("ps_5_0")),
             (s!("PSPackChroma"), s!("ps_5_0")),
             (s!("PSUnpack"), s!("ps_5_0")),
+            (s!("VSFullscreenUV"), s!("vs_5_0")),
+            (s!("PSLayer"), s!("ps_5_0")),
+            (s!("PSResolve"), s!("ps_5_0")),
         ] {
             if let Err(e) = compile(entry, target) {
                 panic!("{}", e.message());

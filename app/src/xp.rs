@@ -183,6 +183,28 @@ pub fn button(ui: &mut Ui, text: &str, enabled: bool, default: bool) -> Response
     resp
 }
 
+/// A small square XP button with an up or down arrow (for moving layers).
+pub fn arrow_button(ui: &mut Ui, up: bool, enabled: bool) -> Response {
+    let sense = if enabled { Sense::click() } else { Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(vec2(22.0, 20.0), sense);
+    let radii = [3.0; 4];
+    let pressed = enabled && resp.is_pointer_button_down_on();
+    gradient_fill(ui, rect, radii, if pressed { gradient::BUTTON_PRESSED } else { gradient::BUTTON });
+    if enabled && resp.hovered() && !pressed {
+        outline_stroke(ui, rect.shrink(1.5), [2.0; 4], Stroke::new(2.0, colour::BUTTON_HOT));
+    }
+    let border = if enabled { colour::BUTTON_BORDER } else { colour::TEXT_DISABLED };
+    outline_stroke(ui, rect, radii, Stroke::new(1.0, border));
+
+    // A small filled triangle.
+    let c = rect.center() + if pressed { vec2(1.0, 1.0) } else { Vec2::ZERO };
+    let (tip, base) = if up { (-3.5, 2.5) } else { (3.5, -2.5) };
+    let points = vec![c + vec2(0.0, tip), c + vec2(-4.5, base), c + vec2(4.5, base)];
+    let fill = if enabled { colour::TEXT } else { colour::TEXT_DISABLED };
+    ui.painter().add(Shape::convex_polygon(points, fill, Stroke::NONE));
+    resp
+}
+
 /// A group box: a rounded light border with a blue title, holding `contents`.
 pub fn group<R>(ui: &mut Ui, title: &str, contents: impl FnOnce(&mut Ui) -> R) -> R {
     let font = regular(12.0);

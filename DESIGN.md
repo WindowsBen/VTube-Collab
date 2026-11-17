@@ -155,6 +155,12 @@ Progress:
   (app: "Use long codes instead"; CLI: `--long`). `VTC_SERVER` env var overrides the server (local tests:
   `npx wrangler dev`, `--var ROOM_LIFETIME_SECONDS:5` to test expiry).
   Redeploy: `cd handshake && npx wrangler deploy` (wrangler logged in via OAuth on the dev PC).
+- ✅ Group source "Collab - Group" (`vtc-core/src/compositor.rs`, `collab/src/group.rs`): 1920×1080, every
+  layer drawn full-canvas (aspect-fit, bottom-aligned) and stacked — positions come from each person's own
+  VTubing app framing. GPU compositing in premultiplied alpha (16-bit float accumulation), resolved to
+  straight alpha for OBS. Layers panel on the Collab screen: top = in front, checkbox = show/hide (your own
+  row = "include me"), ▲/▼ to reorder; each person controls their own group source. Second copy on one PC
+  publishes "Collab - Group 2". No measurable extra CPU.
 
 Code layout: `vtc-core/` (shared: Spout capture/output, packing), `collab/` (the app),
 `spout-probe/` and `encode-test/` (test tools).

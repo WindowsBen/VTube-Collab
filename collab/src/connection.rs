@@ -17,6 +17,7 @@ use vtc_core::spout;
 
 use crate::code;
 use crate::events::{Event, EventSink};
+use crate::group::GroupLayers;
 use crate::peer::{self, Error};
 use crate::session::Session;
 
@@ -24,6 +25,7 @@ pub struct Connection {
     session: Session,
     packer: Packer,
     sender_name: String,
+    my_name: String,
 }
 
 impl Connection {
@@ -37,7 +39,8 @@ impl Connection {
         let local_sdp = peer::create_local(&session.webrtc, gst_webrtc::WebRTCSDPType::Offer)?;
         let invite = code::encode(&session.take_gatherer().into_code(my_name, local_sdp, &events));
 
-        Ok((Connection { session, packer, sender_name: sender_name.to_string() }, invite))
+        let conn = Connection { session, packer, sender_name: sender_name.to_string(), my_name: my_name.to_string() };
+        Ok((conn, invite))
     }
 
     /// Host only: apply the partner's reply code. Returns the partner's name.
@@ -68,13 +71,19 @@ impl Connection {
         let local_sdp = peer::create_local(&session.webrtc, gst_webrtc::WebRTCSDPType::Answer)?;
         let reply = code::encode(&session.take_gatherer().into_code(my_name, local_sdp, &events));
 
-        let conn = Connection { session, packer, sender_name: sender_name.to_string() };
+        let conn = Connection { session, packer, sender_name: sender_name.to_string(), my_name: my_name.to_string() };
         Ok((conn, reply, invite.name))
     }
 
-    /// Send and receive until `stop` becomes true. Cleans up (removes the Spout source) on exit.
+    /// The group source's layer list. The app window keeps this handle to reorder
+    /// and hide layers while the collab runs (it fills in once `run` starts).
+    pub fn group_layers(&self) -> GroupLayers {
+        self.session.group_layers.clone()
+    }
+
+    /// Send and receive until `stop` becomes true. Cleans up (removes the Spout sources) on exit.
     pub fn run(self, stop: &AtomicBool) -> Result<(), Error> {
-        self.session.run(&self.sender_name, self.packer, stop)
+        self.session.run(&self.sender_name, &self.my_name, self.packer, stop)
     }
 }
 

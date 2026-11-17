@@ -5,18 +5,21 @@ pub mod code;
 mod connection;
 mod encoder;
 pub mod events;
+pub mod group;
 mod peer;
 pub mod rooms;
 mod session;
 
 pub use connection::Connection;
 pub use events::{ConnState, Event, EventSink};
+pub use group::{GroupLayer, GroupLayers, GROUP_SOURCE};
 pub use peer::Error;
 
 /// Prefix of the Spout sources we publish for partners.
 pub const PARTNER_PREFIX: &str = "Collab - ";
 
-/// Spout2 sources on this PC that could be your avatar (our own partner outputs excluded).
+/// Spout2 sources on this PC that could be your avatar (our own partner and
+/// group outputs, which all start with "Collab - ", excluded).
 pub fn avatar_sources() -> Vec<String> {
     vtc_core::spout::read_sender_names()
         .into_iter()

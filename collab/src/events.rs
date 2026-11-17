@@ -25,6 +25,8 @@ pub enum Event {
     PartnerVideo,
     /// We're publishing the partner as this Spout2 source name.
     Publishing(String),
+    /// We're publishing the group source (everyone stacked) under this name.
+    GroupPublishing(String),
     Stats { sent_fps: f64, received_fps: f64 },
     /// Something went wrong but the connection keeps going.
     Warning(String),
