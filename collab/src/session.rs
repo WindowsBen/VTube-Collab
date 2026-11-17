@@ -96,6 +96,9 @@ pub struct Session {
     partners: HashMap<PeerId, Partner>,
     /// Layer order/visibility for the group source, shared with the app window.
     pub group_layers: GroupLayers,
+    /// Whether to publish the group source at all. Shared with the app window's
+    /// checkbox; off = the group thread is stopped and uses no resources.
+    pub group_enabled: Arc<AtomicBool>,
     group_stop: Arc<AtomicBool>,
     group_thread: Option<JoinHandle<()>>,
     events: EventSink,
@@ -149,6 +152,7 @@ impl Session {
             send_info,
             partners: HashMap::new(),
             group_layers: GroupLayers::default(),
+            group_enabled: Arc::new(AtomicBool::new(false)), // off until someone wants it
             group_stop: Arc::new(AtomicBool::new(false)),
             group_thread: None,
             events,
@@ -342,7 +346,6 @@ impl Session {
             visible: true,
             is_me: true,
         });
-        self.group_thread = Some(group::spawn(self.group_layers.clone(), self.group_stop.clone(), self.events.clone()));
 
         let result = self.send_loop(sender_name, packer, stop, &mut tick);
         self.shutdown();
@@ -376,6 +379,7 @@ impl Session {
         let mut i: u64 = 0;
         while !stop.load(Ordering::Relaxed) {
             tick(self)?;
+            self.sync_group_source();
 
             // If the avatar app restarted, reopen it (size must stay the same for now).
             if i % FPS == 0 {
@@ -439,13 +443,30 @@ impl Session {
         Ok(())
     }
 
-    fn shutdown(&mut self) {
-        self.closing = true;
-        // Group source first (it reads the partners' sources), then each partner.
+    /// Start or stop the group source to match the `group_enabled` switch.
+    fn sync_group_source(&mut self) {
+        let wanted = self.group_enabled.load(Ordering::Relaxed);
+        if wanted && self.group_thread.is_none() {
+            self.group_stop = Arc::new(AtomicBool::new(false));
+            self.group_thread = Some(group::spawn(self.group_layers.clone(), self.group_stop.clone(), self.events.clone()));
+        } else if !wanted && self.group_thread.is_some() {
+            self.stop_group_source();
+            (self.events)(Event::GroupStopped);
+        }
+    }
+
+    /// Stop the group thread (this also removes "Collab - Group" from OBS's list).
+    fn stop_group_source(&mut self) {
         self.group_stop.store(true, Ordering::Relaxed);
         if let Some(t) = self.group_thread.take() {
             let _ = t.join();
         }
+    }
+
+    fn shutdown(&mut self) {
+        self.closing = true;
+        // Group source first (it reads the partners' sources), then each partner.
+        self.stop_group_source();
         let ids: Vec<PeerId> = self.partners.keys().cloned().collect();
         for id in ids {
             self.remove_partner(&id);

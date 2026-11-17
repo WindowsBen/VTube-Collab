@@ -31,6 +31,8 @@ pub enum Event {
     Publishing { peer: PeerId, source: String },
     /// We're publishing the group source (everyone stacked) under this name.
     GroupPublishing(String),
+    /// The group source was switched off (and removed from OBS's list).
+    GroupStopped,
     /// Every 5 s: our sending frame rate, and how each partner's video is arriving.
     Stats { sent_fps: f64, received: Vec<PartnerStats> },
     /// Something went wrong but the collab keeps going.

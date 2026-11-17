@@ -91,6 +91,11 @@ impl Connection {
         self.session.group_layers.clone()
     }
 
+    /// The group source's on/off switch (off by default).
+    pub fn group_enabled(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.session.group_enabled.clone()
+    }
+
     /// Send and receive until `stop` becomes true. Cleans up (removes the Spout sources) on exit.
     pub fn run(self, stop: &AtomicBool) -> Result<(), Error> {
         self.session.run(&self.sender_name, &self.my_name, self.packer, stop, |_| Ok(()))

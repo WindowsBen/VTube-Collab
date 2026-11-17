@@ -119,6 +119,11 @@ impl Room {
         self.session.group_layers.clone()
     }
 
+    /// The group source's on/off switch (off by default).
+    pub fn group_enabled(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.session.group_enabled.clone()
+    }
+
     /// Run the collab until `stop` is set. `commands` carries the host's
     /// approve/decline decisions from the app.
     pub fn run(self, stop: &AtomicBool, commands: Receiver<RoomCommand>) -> Result<(), Error> {

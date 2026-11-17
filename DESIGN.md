@@ -190,6 +190,15 @@ Progress:
   2 people in a v2 room: ~57–60 fps. Needs a real multi-PC test; receive path CPU per partner will matter for
   big rooms (→ zero-copy decode/unpack on the GPU).
 
+- ✅ XP redesign of the app (2026-11-17): window auto-sizes to each screen (max 860 px, then scrolls);
+  Trebuchet MS bold title, glossy caption buttons (maximise greyed), dark-edged blue frame; File/Help menu
+  bar; XP dropdown arrow button, green-tick checkboxes, trackbar sliders, 75×23 buttons right-aligned at the
+  bottom; status bar with sunken panels + grip; 16×16/32×32 app icon (title bar, taskbar).
+  About and How-to are separate, movable OS windows (egui immediate viewports) opened beside the main window,
+  so the main window stays usable. Test-only `VTC_PREVIEW=<screen>[+about|+howto]` shows any screen with
+  sample data, for screenshots.
+- ✅ Group source on/off switch (default **off**): off = the group thread is stopped and "Collab - Group" is
+  removed from OBS's list. App: checkbox in the "Group source" box; CLI: `--group`.
 - Clean-up (2026-11-17): removed `encode-test/` (early CPU loopback tool), `vtc-core/src/packing.rs` (CPU
   packing, replaced by the GPU shaders), the CPU upload in the Spout sender, and **room server v1** (one-time
   mailbox; deleted with migration `v3`). Old test bundles from before rooms v2 now fall back to long codes.

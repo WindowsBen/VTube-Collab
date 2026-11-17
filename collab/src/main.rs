@@ -2,12 +2,12 @@
 //!
 //!   collab list
 //!       show the Spout2 sources on this PC (your avatar should be one of them)
-//!   collab host "<Spout source>" [--name <your name>] [--max-people N] [--buffer MS] [--long]
+//!   collab host "<Spout source>" [--name <your name>] [--max-people N] [--buffer MS] [--group] [--long]
 //!       create a room and print its code. Everyone who asks to join is let in
 //!       automatically (the app asks you first). --max-people: 2–100 (default 20),
 //!       --buffer: receive buffer 20–500 ms (default 120). With --long: a two-person
 //!       collab with copy-paste long codes instead (no room server needed).
-//!   collab join "<Spout source>" [--name <your name>]
+//!   collab join "<Spout source>" [--name <your name>] [--group]
 //!       join: asks for a room code (or a long invite code)
 //!
 //! Partners appear in OBS as Spout2 sources "Collab - <their name>", and everyone
@@ -15,12 +15,13 @@
 
 mod console;
 
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 use collab::{code, ConnState, Connection, Event, EventSink, Room, RoomCommand, RoomEvent, RoomSettings};
 
-const USAGE: &str = "Usage:\n  collab list\n  collab host \"<Spout source>\" [--name <your name>] [--max-people N] [--buffer MS] [--long]\n  collab join \"<Spout source>\" [--name <your name>]\n\n--max-people: 2-100 (default 20). --buffer: receive buffer in ms, 20-500 (default 120).\n--long: a two-person collab with copy-paste long codes instead of a room code.";
+const USAGE: &str = "Usage:\n  collab list\n  collab host \"<Spout source>\" [--name <your name>] [--max-people N] [--buffer MS] [--group] [--long]\n  collab join \"<Spout source>\" [--name <your name>] [--group]\n\n--group: also publish the group source \"Collab - Group\" (everyone in one OBS source).\n--max-people: 2-100 (default 20). --buffer: receive buffer in ms, 20-500 (default 120).\n--long: a two-person collab with copy-paste long codes instead of a room code.";
 
 type Error = Box<dyn std::error::Error>;
 
@@ -89,6 +90,7 @@ fn print_events() -> EventSink {
         Event::PartnerVideo { peer } => println!("[video {peer}] stream started"),
         Event::Publishing { source, .. } => println!("[spout] publishing \"{source}\" — add it in OBS with Spout2 Capture"),
         Event::GroupPublishing(name) => println!("[spout] publishing group source \"{name}\" (everyone stacked)"),
+        Event::GroupStopped => println!("[spout] group source switched off"),
         Event::Stats { sent_fps, received } => {
             let from: Vec<String> = received
                 .iter()
@@ -137,6 +139,7 @@ fn host_room(sender: &str, name: &str, settings: RoomSettings) -> Result<(), Err
     println!("CODE: {code}");
     println!("Press Enter to stop.");
     let stop = console::stop_on_enter();
+    room.group_enabled().store(wants_group(), Ordering::Relaxed);
     room.run(&stop, cmd_rx)?;
     println!("Stopped.");
     Ok(())
@@ -159,6 +162,7 @@ fn host_long(sender: &str, name: &str) -> Result<(), Error> {
     }
     println!("Press Enter to stop.");
     let stop = console::stop_on_enter();
+    conn.group_enabled().store(wants_group(), Ordering::Relaxed);
     conn.run(&stop)?;
     println!("Stopped.");
     Ok(())
@@ -179,14 +183,21 @@ fn join(sender: &str, name: &str) -> Result<(), Error> {
         console::show_code("REPLY", &reply);
         println!("Send this reply code back to {partner}. Press Enter to stop.");
         let stop = console::stop_on_enter();
-        conn.run(&stop)?;
+        conn.group_enabled().store(wants_group(), Ordering::Relaxed);
+    conn.run(&stop)?;
     } else {
         let room = Room::join(sender, name, &text, print_events(), print_room_events(None))?;
         println!("Press Enter to stop.");
         let stop = console::stop_on_enter();
         let (_unused_tx, cmd_rx) = mpsc::channel();
-        room.run(&stop, cmd_rx)?;
+        room.group_enabled().store(wants_group(), Ordering::Relaxed);
+    room.run(&stop, cmd_rx)?;
     }
     println!("Stopped.");
     Ok(())
+}
+
+/// `--group` given: also publish the group source.
+fn wants_group() -> bool {
+    std::env::args().any(|a| a == "--group")
 }

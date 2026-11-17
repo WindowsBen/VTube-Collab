@@ -1,43 +1,55 @@
 //! VTube Collab — the app window.
 //!
-//! Screens: Setup → Room (normal) — or the long-code fallback screens.
+//! Screens: Setup → (Room settings →) Room — or the long-code fallback screens.
 //! The collab itself runs on a background thread (worker.rs); this file only draws
-//! and reacts to clicks.
+//! and reacts to clicks. The window resizes itself to fit each screen.
 
 // Release builds open without a black console window behind the app.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod preview;
 mod theme;
 mod worker;
 mod xp;
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use collab::{ConnState, Event, PeerId, RoomEvent, RoomSettings};
-use eframe::egui::{self, Color32, Rect, RichText, UiBuilder, pos2, vec2};
+use eframe::egui::{self, Align, Color32, Layout, Rect, RichText, UiBuilder, pos2, vec2};
 
 use theme::colour;
 use worker::{FromWorker, ToWorker, Worker};
 
-const WINDOW_SIZE: [f32; 2] = [500.0, 620.0];
-const STATUS_BAR_HEIGHT: f32 = 22.0;
+const WINDOW_WIDTH: f32 = 470.0;
+/// The window grows with its contents up to this height, then scrolls.
+const MAX_WINDOW_HEIGHT: f32 = 860.0;
+/// Space between the window edge and the contents (XP dialogs use about 7–11 px).
+const MARGIN: f32 = 10.0;
 
 fn main() -> eframe::Result {
     collab::quiet_gstreamer_log();
+    let icon = app_icon();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("VTube Collab")
-            .with_inner_size(WINDOW_SIZE)
+            .with_inner_size([WINDOW_WIDTH, 300.0])
             .with_resizable(false)
             .with_decorations(false) // we draw our own XP title bar
-            .with_transparent(true), // so the rounded top corners can be see-through
+            .with_transparent(true) // so the rounded top corners can be see-through
+            .with_icon(Arc::new(icon)),
         ..Default::default()
     };
     eframe::run_native("VTube Collab", options, Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))))
 }
 
+/// The taskbar / window icon (32×32).
+fn app_icon() -> egui::IconData {
+    egui::IconData { rgba: xp::app_icon_rgba(32), width: 32, height: 32 }
+}
+
 /// Where joining is at.
-enum JoinPhase {
+pub enum JoinPhase {
     /// Typing the code.
     Idle,
     /// Connecting to the room.
@@ -49,7 +61,7 @@ enum JoinPhase {
 }
 
 /// Which screen is showing, and what it needs to remember.
-enum Screen {
+pub enum Screen {
     Setup,
     /// Host: choose room settings before opening the room.
     HostSettings { settings: RoomSettings },
@@ -61,43 +73,75 @@ enum Screen {
 }
 
 /// Someone else in the collab.
-struct Member {
-    id: PeerId,
-    name: String,
-    state: Option<ConnState>,
-    source: Option<String>,
-    fps: Option<f64>,
-    loss_percent: Option<f64>,
-    unrepaired: Option<u32>,
-    round_trip_ms: Option<f64>,
+pub struct Member {
+    pub id: PeerId,
+    pub name: String,
+    pub state: Option<ConnState>,
+    pub source: Option<String>,
+    pub fps: Option<f64>,
+    pub loss_percent: Option<f64>,
+    pub unrepaired: Option<u32>,
+    pub round_trip_ms: Option<f64>,
 }
 
-struct App {
-    name: String,
-    sources: Vec<String>,
-    source: Option<String>,
+#[derive(Clone, Copy, PartialEq)]
+pub enum Menu {
+    File,
+    Help,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Dialog {
+    About,
+    HowTo,
+}
+
+impl Dialog {
+    fn size(self) -> egui::Vec2 {
+        match self {
+            Dialog::About => vec2(360.0, 210.0),
+            Dialog::HowTo => vec2(360.0, 288.0),
+        }
+    }
+}
+
+pub struct App {
+    pub name: String,
+    pub sources: Vec<String>,
+    pub source: Option<String>,
     last_refresh: Instant,
-    screen: Screen,
+    pub screen: Screen,
     worker: Option<Worker>,
     // What the collab has told us so far.
-    status: String,
-    members: Vec<Member>,
-    requests: Vec<(PeerId, String)>,
-    sent_fps: Option<f64>,
-    group_name: Option<String>,
-    group_layers: Option<collab::GroupLayers>,
+    pub status: String,
+    pub members: Vec<Member>,
+    pub requests: Vec<(PeerId, String)>,
+    pub sent_fps: Option<f64>,
+    pub group_name: Option<String>,
+    pub group_layers: Option<collab::GroupLayers>,
+    /// The group source's on/off switch (shared with the collab; off by default).
+    pub group_enabled: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// The room's settings, once we're in.
-    room_settings: Option<RoomSettings>,
+    pub room_settings: Option<RoomSettings>,
     server_lost: bool,
     copied_at: Option<Instant>,
     setup_error: Option<String>,
+    // Window chrome.
+    pub open_menu: Option<Menu>,
+    /// Open About / How-to windows, with where to first place each (beside the main window).
+    pub dialogs: Vec<(Dialog, Option<egui::Pos2>)>,
+    icon: Arc<egui::IconData>,
+    /// Last window height we asked for (so we only ask when it changes).
+    requested_height: f32,
+    /// Preview mode (screenshots only): no background refresh of the source list.
+    pub preview: bool,
 }
 
 impl App {
     fn new(ctx: &egui::Context) -> App {
         theme::apply(ctx);
         let sources = collab::avatar_sources();
-        App {
+        let mut app = App {
             name: String::new(),
             source: sources.first().cloned(),
             sources,
@@ -110,11 +154,22 @@ impl App {
             sent_fps: None,
             group_name: None,
             group_layers: None,
+            group_enabled: None,
             room_settings: None,
             server_lost: false,
             copied_at: None,
             setup_error: None,
+            open_menu: None,
+            dialogs: Vec::new(),
+            icon: Arc::new(app_icon()),
+            requested_height: 0.0,
+            preview: false,
+        };
+        // TEST ONLY: VTC_PREVIEW=room (etc.) shows a screen with sample data, for screenshots.
+        if let Ok(which) = std::env::var("VTC_PREVIEW") {
+            preview::apply(&mut app, &which);
         }
+        app
     }
 
     /// Back to the start (stops any collab; dropping the worker cleans up).
@@ -131,6 +186,7 @@ impl App {
         self.sent_fps = None;
         self.group_name = None;
         self.group_layers = None;
+        self.group_enabled = None;
         self.room_settings = None;
         self.server_lost = false;
     }
@@ -202,7 +258,10 @@ impl App {
                     }
                     self.status = format!("Reply code ready. Send it back to {partner}.");
                 }
-                FromWorker::Group(layers) => self.group_layers = Some(layers),
+                FromWorker::Group(layers, enabled) => {
+                    self.group_layers = Some(layers);
+                    self.group_enabled = Some(enabled);
+                }
                 FromWorker::Ended(error) => {
                     self.worker = None;
                     // Joining failed before getting in (wrong code, declined...): stay on the
@@ -255,6 +314,7 @@ impl App {
                 }
             }
             Event::GroupPublishing(name) => self.group_name = Some(name),
+            Event::GroupStopped => self.group_name = None,
             Event::Stats { sent_fps, received } => {
                 self.sent_fps = Some(sent_fps);
                 for p in received {
@@ -319,7 +379,7 @@ impl App {
 
     fn setup_screen(&mut self, ui: &mut egui::Ui) {
         // Re-check the Spout sources every 2 s while on this screen.
-        if self.last_refresh.elapsed() > Duration::from_secs(2) {
+        if !self.preview && self.last_refresh.elapsed() > Duration::from_secs(2) {
             self.refresh_sources();
         }
         ui.ctx().request_repaint_after(Duration::from_secs(2));
@@ -327,101 +387,95 @@ impl App {
         xp::group(ui, "Your setup", |ui| {
             egui::Grid::new("setup").num_columns(2).spacing(vec2(10.0, 8.0)).show(ui, |ui| {
                 ui.label("Your name:");
-                xp::text_box(ui, &mut self.name, "How others will see you", 260.0);
+                xp::text_box(ui, &mut self.name, "How others will see you", 270.0);
                 ui.end_row();
 
                 ui.label("Your avatar:");
                 let selected = self.source.clone().unwrap_or_else(|| "(no Spout2 sources found)".into());
-                egui::ComboBox::from_id_salt("avatar").selected_text(selected).width(260.0).show_ui(ui, |ui| {
+                xp::dropdown(ui, "avatar", &selected, 270.0, |ui| {
                     for s in &self.sources {
                         ui.selectable_value(&mut self.source, Some(s.clone()), s);
                     }
                 });
                 ui.end_row();
             });
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new(
-                    "Your avatar is your VTubing app's Spout2 output. If the list is empty, \
-                     turn on Spout2 output in your VTubing app.",
-                )
-                .size(11.0)
-                .color(Color32::from_rgb(0x44, 0x44, 0x44)),
+            ui.add_space(2.0);
+            xp::hint(
+                ui,
+                "Your avatar is your VTubing app's Spout2 output. If the list is empty, \
+                 turn on Spout2 output in your VTubing app.",
             );
         });
 
-        ui.add_space(10.0);
-        let ready = !self.name.trim().is_empty() && self.source.is_some();
-        ui.horizontal(|ui| {
-            if xp::button(ui, "Host a collab", ready, true).clicked() {
-                self.setup_error = None;
-                self.screen = Screen::HostSettings { settings: RoomSettings::default() };
-                self.status = "Choose the room settings.".into();
-            }
-            if xp::button(ui, "Join a collab", ready, false).clicked() {
-                self.setup_error = None;
-                self.screen = Screen::Join { input: String::new(), phase: JoinPhase::Idle, error: None };
-                self.status = "Enter the room code you were given.".into();
-            }
-        });
-        if !ready {
-            ui.label(RichText::new("Enter your name and pick your avatar to start.").size(11.0).color(colour::TEXT_DISABLED));
-        }
         if let Some(e) = &self.setup_error {
             ui.add_space(4.0);
             ui.colored_label(colour::ERROR, e);
         }
+        let ready = !self.name.trim().is_empty() && self.source.is_some();
+        if !ready {
+            xp::hint(ui, "Enter your name and pick your avatar to start.");
+        }
+
+        ui.add_space(4.0);
+        button_row(ui, |ui| {
+            if xp::button(ui, "Join a collab...", ready, false).clicked() {
+                self.setup_error = None;
+                self.screen = Screen::Join { input: String::new(), phase: JoinPhase::Idle, error: None };
+                self.status = "Enter the room code you were given.".into();
+            }
+            if xp::button(ui, "Host a collab...", ready, true).clicked() {
+                self.setup_error = None;
+                self.screen = Screen::HostSettings { settings: RoomSettings::default() };
+                self.status = "Choose the room settings.".into();
+            }
+        });
     }
 
     fn host_settings_screen(&mut self, ui: &mut egui::Ui) {
         let Screen::HostSettings { settings } = &mut self.screen else { return };
         let mut open = false;
+        let mut back = false;
 
         xp::group(ui, "Room settings", |ui| {
-            egui::Grid::new("room-settings").num_columns(2).spacing(vec2(12.0, 10.0)).show(ui, |ui| {
+            egui::Grid::new("room-settings").num_columns(2).spacing(vec2(12.0, 6.0)).show(ui, |ui| {
                 ui.label("Max people:");
-                ui.add(
-                    egui::Slider::new(&mut settings.max_people, collab::MIN_PEOPLE..=collab::MAX_PEOPLE)
-                        .suffix(" people"),
-                );
+                xp::slider(ui, &mut settings.max_people, collab::MIN_PEOPLE..=collab::MAX_PEOPLE, 220.0, " people");
                 ui.end_row();
 
                 ui.label("Receive buffer:");
-                ui.add(
-                    egui::Slider::new(&mut settings.buffer_ms, collab::MIN_BUFFER_MS..=collab::MAX_BUFFER_MS)
-                        .suffix(" ms"),
-                );
+                xp::slider(ui, &mut settings.buffer_ms, collab::MIN_BUFFER_MS..=collab::MAX_BUFFER_MS, 220.0, " ms");
                 ui.end_row();
             });
             ui.add_space(4.0);
-            let hint = |ui: &mut egui::Ui, text: &str| {
-                ui.label(RichText::new(text).size(11.0).color(Color32::from_rgb(0x44, 0x44, 0x44)));
-            };
-            hint(ui, "Max people counts you too. Everyone sends their avatar to everyone, so bigger rooms \
-                      need more upload speed (quality is lowered automatically to compensate).");
-            hint(ui, "Receive buffer: how long incoming video is held before it's shown. More = smoother \
-                      on bad connections (lost data can be resent in time), but avatars appear later. \
-                      120 ms suits most people. Everyone in the room uses this setting.");
+            xp::hint(
+                ui,
+                "Max people counts you too. Everyone sends their avatar to everyone, so bigger rooms \
+                 need more upload speed (quality is lowered automatically to compensate).",
+            );
+            xp::hint(
+                ui,
+                "Receive buffer: how long incoming video is held before it's shown. More = smoother \
+                 on bad connections (lost data can be resent in time), but avatars appear later. \
+                 120 ms suits most people. Everyone in the room uses this setting.",
+            );
             ui.add_space(2.0);
-            if xp::button(ui, "Reset to defaults", true, false).clicked() {
+            if xp::button(ui, "Defaults", true, false).clicked() {
                 *settings = RoomSettings::default();
             }
         });
 
-        ui.add_space(10.0);
-        ui.horizontal(|ui| {
+        ui.add_space(4.0);
+        button_row(ui, |ui| {
+            back = xp::button(ui, "< Back", true, false).clicked();
             open = xp::button(ui, "Open room", true, true).clicked();
-            if xp::button(ui, "Back", true, false).clicked() {
-                self.screen = Screen::Setup;
-                self.status = "Ready.".into();
-            }
         });
 
-        if open {
-            let settings = match &self.screen {
-                Screen::HostSettings { settings } => *settings,
-                _ => return,
-            };
+        if back {
+            self.screen = Screen::Setup;
+            self.status = "Ready.".into();
+        } else if open {
+            let Screen::HostSettings { settings } = &self.screen else { return };
+            let settings = *settings;
             self.clear_collab_info();
             self.worker = Some(Worker::host(self.source.clone().unwrap(), self.name.trim().into(), settings, ui.ctx().clone()));
             self.screen = Screen::Room { code: None, host: true, long_codes: false };
@@ -434,54 +488,54 @@ impl App {
         let mut start: Option<String> = None;
         let idle = matches!(phase, JoinPhase::Idle);
 
-        xp::group(ui, "Enter the room code", |ui| {
-            ui.horizontal(|ui| {
-                let resp = xp::text_box(ui, input, "e.g. MINTY-OTTER-42", 260.0);
-                let enabled = idle && !input.trim().is_empty();
-                let go = xp::button(ui, "Join", enabled, true).clicked()
-                    || (enabled && resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                if go {
-                    // Check the format here, so typos are reported instantly.
-                    if collab::code::decode(input).is_ok() || collab::rooms::normalise(input).is_some() {
-                        start = Some(input.trim().to_string());
-                    } else {
-                        *error = Some("That isn't a room code (like MINTY-OTTER-42).".into());
-                    }
-                }
-            });
-            ui.label(RichText::new("A long invite code (VTC1-...) works here too.").size(11.0).color(colour::TEXT_DISABLED));
+        xp::group(ui, "Join a collab", |ui| {
+            ui.label("Room code:");
+            let resp = xp::text_box(ui, input, "e.g. MINTY-OTTER-42", ui.available_width());
+            xp::hint(ui, "Type the code the host gave you. A long invite code (VTC1-...) works here too.");
             if let Some(e) = error {
                 ui.colored_label(colour::ERROR, e.as_str());
             }
+            let enter = idle && resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if enter && !input.trim().is_empty() {
+                start = Some(input.trim().to_string());
+            }
         });
-        ui.add_space(8.0);
 
         match phase {
             JoinPhase::Idle => {}
-            JoinPhase::Joining => spinner_group(ui, "Joining", "Connecting to the room..."),
-            JoinPhase::Waiting => spinner_group(ui, "Joining", "Waiting for the host to let you in..."),
+            JoinPhase::Joining => spinner_line(ui, "Connecting to the room..."),
+            JoinPhase::Waiting => spinner_line(ui, "Waiting for the host to let you in..."),
             JoinPhase::LongReply { code, partner } => {
                 let title = format!("Send this reply code back to {partner}");
                 xp::group(ui, &title, |ui| {
                     code_preview(ui, code, &mut self.copied_at);
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(format!("Waiting for {partner} to connect..."));
-                    });
+                    spinner_line(ui, &format!("Waiting for {partner} to connect..."));
                 });
             }
         }
 
-        if let Some(text) = start {
-            *error = None;
-            *phase = JoinPhase::Joining;
-            self.clear_collab_info();
-            self.worker = Some(Worker::join(self.source.clone().unwrap(), self.name.trim().into(), text, ui.ctx().clone()));
-            self.status = "Joining...".into();
-        }
+        let mut cancel = false;
+        ui.add_space(4.0);
+        button_row(ui, |ui| {
+            cancel = xp::button(ui, "Cancel", true, false).clicked();
+            if xp::button(ui, "Join", idle && !input.trim().is_empty(), true).clicked() {
+                start = Some(input.trim().to_string());
+            }
+        });
 
-        ui.add_space(10.0);
-        if xp::button(ui, "Cancel", true, false).clicked() {
+        if let Some(text) = start {
+            // Check the format here, so typos are reported instantly.
+            if collab::code::decode(&text).is_ok() || collab::rooms::normalise(&text).is_some() {
+                *error = None;
+                *phase = JoinPhase::Joining;
+                self.clear_collab_info();
+                self.worker = Some(Worker::join(self.source.clone().unwrap(), self.name.trim().into(), text, ui.ctx().clone()));
+                self.status = "Joining...".into();
+            } else {
+                *error = Some("That isn't a room code (like MINTY-OTTER-42).".into());
+            }
+        }
+        if cancel {
             self.reset("Cancelled.");
         }
     }
@@ -491,35 +545,33 @@ impl App {
         let mut send_reply: Option<String> = None;
 
         xp::group(ui, "Room codes are unavailable right now", |ui| {
-            ui.label(RichText::new(format!("({why})")).size(11.0).color(colour::TEXT_DISABLED));
-            ui.label("You can still collab with one person using long codes:");
+            xp::hint(ui, &format!("({why})"));
+            ui.label("You can still collab with one person using long codes.");
         });
-        ui.add_space(8.0);
         xp::group(ui, "Long codes", |ui| {
+            ui.label("1. Send this invite code to your partner:");
             match invite {
-                Some(code) => {
-                    ui.label("1. Send this invite code to your partner:");
-                    code_preview(ui, code, &mut self.copied_at);
-                }
-                None => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label("Preparing the invite code...");
-                    });
-                }
+                Some(code) => code_preview(ui, code, &mut self.copied_at),
+                None => spinner_line(ui, "Preparing the invite code..."),
             }
             ui.label("2. Paste their reply code:");
-            ui.horizontal(|ui| {
-                let resp = xp::text_box(ui, reply_input, "VTC1-...", 300.0);
-                let enabled = invite.is_some() && !reply_input.trim().is_empty();
-                let go = xp::button(ui, "Connect", enabled, true).clicked()
-                    || (enabled && resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                if go {
-                    send_reply = Some(reply_input.trim().to_string());
-                }
-            });
+            let resp = xp::text_box(ui, reply_input, "VTC1-...", ui.available_width());
+            let enabled = invite.is_some() && !reply_input.trim().is_empty();
+            if enabled && resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                send_reply = Some(reply_input.trim().to_string());
+            }
             if let Some(e) = error {
                 ui.colored_label(colour::ERROR, e.as_str());
+            }
+        });
+
+        let mut cancel = false;
+        ui.add_space(4.0);
+        button_row(ui, |ui| {
+            cancel = xp::button(ui, "Cancel", true, false).clicked();
+            let enabled = invite.is_some() && !reply_input.trim().is_empty();
+            if xp::button(ui, "Connect", enabled, true).clicked() {
+                send_reply = Some(reply_input.trim().to_string());
             }
         });
         if let Some(reply) = send_reply {
@@ -528,9 +580,7 @@ impl App {
                 w.send(ToWorker::Reply(reply));
             }
         }
-
-        ui.add_space(10.0);
-        if xp::button(ui, "Cancel", true, false).clicked() {
+        if cancel {
             self.reset("Cancelled.");
         }
     }
@@ -546,34 +596,28 @@ impl App {
             });
         } else {
             xp::group(ui, "Room code", |ui| match &code {
-                None => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label("Opening a room...");
-                    });
-                }
+                None => spinner_line(ui, "Opening a room..."),
                 Some(code) => {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(code.as_str()).font(theme::bold(20.0)).color(colour::GROUP_TITLE));
-                        ui.add_space(8.0);
-                        copy_button(ui, code, &mut self.copied_at);
+                        ui.label(RichText::new(code.as_str()).font(theme::bold(18.0)).color(colour::GROUP_TITLE));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            copy_button(ui, code, &mut self.copied_at);
+                        });
                     });
                     let hint = if self.server_lost {
-                        "The room server can't be reached, so nobody new can join right now."
+                        "The room server can't be reached, so nobody new can join right now.".to_string()
                     } else if host {
-                        "Share this code. You decide who gets in."
+                        "Share this code. You decide who gets in.".to_string()
                     } else {
-                        "Others can join with this code (the host lets them in)."
+                        "Others can join with this code (the host lets them in).".to_string()
                     };
-                    ui.label(RichText::new(hint).size(11.0).color(colour::TEXT_DISABLED));
+                    xp::hint(ui, &hint);
                     if let Some(s) = &self.room_settings {
-                        let line = format!("Up to {} people · {} ms receive buffer", s.max_people, s.buffer_ms);
-                        ui.label(RichText::new(line).size(11.0).color(colour::TEXT_DISABLED));
+                        xp::hint(ui, &format!("Up to {} people · {} ms receive buffer", s.max_people, s.buffer_ms));
                     }
                 }
             });
         }
-        ui.add_space(6.0);
 
         // ---- Join requests (host) ----
         if host && !self.requests.is_empty() {
@@ -584,12 +628,14 @@ impl App {
                         xp::status_dot(ui, colour::WAIT);
                         ui.label(RichText::new(name).font(theme::bold(12.0)));
                         ui.label("wants to join");
-                        if xp::button(ui, "Accept", true, true).clicked() {
-                            decisions.push(ToWorker::Approve(id.clone()));
-                        }
-                        if xp::button(ui, "Decline", true, false).clicked() {
-                            decisions.push(ToWorker::Decline(id.clone()));
-                        }
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if xp::button(ui, "Decline", true, false).clicked() {
+                                decisions.push(ToWorker::Decline(id.clone()));
+                            }
+                            if xp::button(ui, "Accept", true, true).clicked() {
+                                decisions.push(ToWorker::Approve(id.clone()));
+                            }
+                        });
                     });
                 }
             });
@@ -603,14 +649,12 @@ impl App {
                     w.send(d);
                 }
             }
-            ui.add_space(6.0);
         }
 
         // ---- People ----
-        let sent = self.sent_fps.map(|f| format!("sending {f:.0} fps")).unwrap_or_default();
         xp::group(ui, &format!("People ({} with you)", self.members.len() + 1), |ui| {
             if self.members.is_empty() {
-                ui.label(RichText::new("Nobody else here yet.").color(colour::TEXT_DISABLED));
+                xp::hint(ui, "Nobody else here yet.");
             }
             for m in &self.members {
                 ui.horizontal(|ui| {
@@ -623,34 +667,34 @@ impl App {
                     };
                     xp::status_dot(ui, dot);
                     ui.label(RichText::new(&m.name).font(theme::bold(12.0)));
-                    ui.label(RichText::new(state).color(colour::TEXT_DISABLED));
+                    ui.label(RichText::new(state).color(colour::TEXT_HINT));
                     if let Some(f) = m.fps {
-                        ui.label(RichText::new(format!("· {f:.0} fps")).color(colour::TEXT_DISABLED));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.label(format!("{f:.0} fps"));
+                        });
                     }
                 });
-                // Connection quality: loss in red when it's high enough to notice.
-                let mut quality = Vec::new();
+                let source = m.source.clone().unwrap_or_else(|| collab::group::partner_source(&m.name));
+                let mut details = vec![format!("OBS source: {source}")];
                 if let Some(ms) = m.round_trip_ms {
-                    quality.push(format!("{ms:.0} ms round trip"));
+                    details.push(format!("{ms:.0} ms"));
                 }
                 if let Some(loss) = m.loss_percent {
-                    quality.push(format!("{loss:.1}% packet loss"));
+                    details.push(format!("{loss:.1}% loss"));
                 }
-                // Losses resending couldn't fix in time = visible stutter. If this keeps
-                // happening, the host should raise the receive buffer.
+                ui.horizontal(|ui| {
+                    ui.add_space(18.0);
+                    xp::hint(ui, &details.join(" · "));
+                });
+                // Losses resending couldn't fix in time = visible stutter.
                 if let Some(u) = m.unrepaired.filter(|u| *u > 0) {
-                    quality.push(format!("{u} skipped (try a bigger buffer)"));
+                    ui.horizontal(|ui| {
+                        ui.add_space(18.0);
+                        let text = format!("{u} frames skipped — the host may want a bigger receive buffer");
+                        let colour = if u > 2 { colour::ERROR } else { colour::TEXT_HINT };
+                        ui.label(RichText::new(text).size(11.0).color(colour));
+                    });
                 }
-                if !quality.is_empty() {
-                    let bad = m.unrepaired.is_some_and(|u| u > 2);
-                    let colour = if bad { colour::ERROR } else { colour::TEXT_DISABLED };
-                    ui.label(RichText::new(format!("      {}", quality.join(" · "))).size(11.0).color(colour));
-                }
-                let source = m.source.clone().unwrap_or_else(|| collab::group::partner_source(&m.name));
-                ui.label(RichText::new(format!("      OBS source: {source}")).size(11.0).color(colour::TEXT_DISABLED));
-            }
-            if !sent.is_empty() {
-                ui.label(RichText::new(format!("You: {sent}")).size(11.0).color(colour::TEXT_DISABLED));
             }
             if self.members.iter().any(|m| m.state == Some(ConnState::Failed)) {
                 ui.colored_label(
@@ -661,46 +705,64 @@ impl App {
             }
         });
 
-        ui.add_space(6.0);
         self.layers_panel(ui);
 
-        ui.add_space(10.0);
-        let leave = if long_codes { "Leave collab" } else { "Leave room" };
-        if xp::button(ui, leave, true, false).clicked() {
+        let mut leave = false;
+        ui.add_space(4.0);
+        button_row(ui, |ui| {
+            leave = xp::button(ui, if long_codes { "Leave collab" } else { "Leave room" }, true, false).clicked();
+        });
+        if leave {
             self.reset("You left.");
         }
     }
 
-    /// The group source's layers, photo-editor style: top layer first, a checkbox to
-    /// show/hide each one (your own row = "include me"), arrows to change the order.
-    /// Changes go straight into the shared list; the group source updates next frame.
+    /// The group source: an on/off switch, and (when on) its layers, photo-editor
+    /// style — top layer first, a checkbox to show/hide each one (your own row =
+    /// "include me"), arrows to change the order. Changes go straight into the shared
+    /// list; the group source updates next frame.
     fn layers_panel(&mut self, ui: &mut egui::Ui) {
-        let Some(layers) = &self.group_layers else { return };
+        let (Some(layers), Some(enabled)) = (&self.group_layers, &self.group_enabled) else { return };
         let name = self.group_name.clone().unwrap_or_else(|| collab::GROUP_SOURCE.into());
-        let title = format!("Group source: {name}");
 
-        xp::group(ui, &title, |ui| {
+        xp::group(ui, "Group source", |ui| {
+            use std::sync::atomic::Ordering;
+            let mut on = enabled.load(Ordering::Relaxed);
+            if xp::checkbox(ui, &mut on, "Publish a group source (everyone in one OBS source)").changed() {
+                enabled.store(on, Ordering::Relaxed);
+            }
+            if !on {
+                xp::hint(
+                    ui,
+                    "Off: only the individual \"Collab - <name>\" sources are published, \
+                     which saves resources. Turn on to get everyone in one source.",
+                );
+                return;
+            }
+            xp::hint(ui, &format!("In OBS, add a Spout2 Capture source and pick \"{name}\"."));
+            ui.add_space(2.0);
+
             let mut list = layers.lock().unwrap();
             if list.is_empty() {
-                ui.label("Starting...");
+                xp::hint(ui, "Starting...");
                 return;
             }
             let count = list.len();
-            let mut move_up: Option<usize> = None;
-            let mut move_down: Option<usize> = None;
+            let (mut move_up, mut move_down) = (None, None);
             for (i, layer) in list.iter_mut().enumerate() {
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut layer.visible, "");
+                    xp::checkbox(ui, &mut layer.visible, "");
                     let text = RichText::new(&layer.label);
                     let text = if layer.visible { text } else { text.color(colour::TEXT_DISABLED) };
-                    let label_width = ui.available_width() - 2.0 * 22.0 - 12.0;
-                    ui.add_sized([label_width, 20.0], egui::Label::new(text).truncate());
-                    if xp::arrow_button(ui, true, i > 0).on_hover_text("Move up (in front)").clicked() {
-                        move_up = Some(i);
-                    }
-                    if xp::arrow_button(ui, false, i + 1 < count).on_hover_text("Move down (behind)").clicked() {
-                        move_down = Some(i);
-                    }
+                    ui.label(text);
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if xp::arrow_button(ui, false, i + 1 < count).on_hover_text("Move down (behind)").clicked() {
+                            move_down = Some(i);
+                        }
+                        if xp::arrow_button(ui, true, i > 0).on_hover_text("Move up (in front)").clicked() {
+                            move_up = Some(i);
+                        }
+                    });
                 });
             }
             if let Some(i) = move_up {
@@ -709,21 +771,213 @@ impl App {
             if let Some(i) = move_down {
                 list.swap(i, i + 1);
             }
-            ui.label(
-                RichText::new("Top of the list = in front. Untick to hide (untick yourself to leave you out).")
-                    .size(11.0)
-                    .color(colour::TEXT_DISABLED),
-            );
+            xp::hint(ui, "Top of the list = in front. Untick to hide (untick yourself to leave you out).");
         });
+    }
+
+    // ---------------- menus & dialogs ----------------
+
+    fn menu_bar(&mut self, ui: &mut egui::Ui, rect: Rect) {
+        let mut opened_at: Option<(Menu, Rect)> = None;
+        ui.scope_builder(UiBuilder::new().max_rect(rect.shrink2(vec2(2.0, 1.0))), |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                for (menu, label) in [(Menu::File, "File"), (Menu::Help, "Help")] {
+                    let resp = xp::menu_title(ui, label, self.open_menu == Some(menu));
+                    // Click opens/closes; while one menu is open, hovering another switches to it.
+                    if resp.clicked() {
+                        self.open_menu = if self.open_menu == Some(menu) { None } else { Some(menu) };
+                    } else if self.open_menu.is_some() && resp.hovered() {
+                        self.open_menu = Some(menu);
+                    }
+                    if self.open_menu == Some(menu) {
+                        opened_at = Some((menu, resp.rect));
+                    }
+                }
+            });
+        });
+
+        let Some((menu, title_rect)) = opened_at else { return };
+        let popup = egui::Area::new(egui::Id::unique("xp-menu"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(title_rect.left_bottom() + vec2(0.0, 1.0))
+            .show(ui.ctx(), |ui| {
+                egui::Frame::NONE
+                    .fill(Color32::WHITE)
+                    .stroke(egui::Stroke::new(1.0, colour::MENU_BORDER))
+                    .inner_margin(2)
+                    .shadow(egui::Shadow { offset: [2, 2], blur: 2, spread: 0, color: Color32::from_black_alpha(60) })
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        match menu {
+                            Menu::File => {
+                                if xp::menu_item(ui, "Exit").clicked() {
+                                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                                }
+                            }
+                            Menu::Help => {
+                                if xp::menu_item(ui, "How to use...").clicked() {
+                                    self.open_dialog(ui.ctx(), Dialog::HowTo);
+                                    self.open_menu = None;
+                                }
+                                xp::menu_separator(ui);
+                                if xp::menu_item(ui, "About VTube Collab").clicked() {
+                                    self.open_dialog(ui.ctx(), Dialog::About);
+                                    self.open_menu = None;
+                                }
+                            }
+                        }
+                    });
+            });
+
+        // Clicking anywhere outside the menu (and its title) closes it.
+        let clicked_outside = ui.ctx().input(|i| {
+            i.pointer.any_pressed()
+                && i.pointer.interact_pos().is_some_and(|p| !popup.response.rect.contains(p) && !rect.contains(p))
+        });
+        if clicked_outside || ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.open_menu = None;
+        }
+    }
+
+    /// Open the About / How-to window (it's placed beside the main window when first drawn).
+    fn open_dialog(&mut self, _ctx: &egui::Context, dialog: Dialog) {
+        if !self.dialogs.iter().any(|(d, _)| *d == dialog) {
+            self.dialogs.push((dialog, None));
+        }
+    }
+
+    /// Where to first place a window of `size`: to the right of the main window, or to
+    /// its left if that would go off-screen. `index` staggers several windows.
+    fn beside_main_window(ctx: &egui::Context, size: egui::Vec2, index: usize) -> Option<egui::Pos2> {
+        ctx.input(|i| {
+            let main = i.viewport().outer_rect?;
+            let screen_w = i.viewport().monitor_size.map(|s| s.x).unwrap_or(f32::INFINITY);
+            let y = main.top() + 30.0 * index as f32;
+            Some(if main.right() + 8.0 + size.x <= screen_w {
+                pos2(main.right() + 8.0, y)
+            } else {
+                pos2((main.left() - 8.0 - size.x).max(0.0), y)
+            })
+        })
+    }
+
+    /// The About / How-to windows: real separate windows with their own XP title bar.
+    /// They can be moved anywhere (even outside the main window), and the main window
+    /// stays fully usable meanwhile — e.g. read the steps while doing them.
+    fn dialog_windows(&mut self, ctx: &egui::Context) {
+        // Decide where newly opened windows go (once; after that they stay where dragged).
+        for (index, (dialog, pos)) in self.dialogs.iter_mut().enumerate() {
+            if pos.is_none() {
+                *pos = Self::beside_main_window(ctx, dialog.size(), index);
+            }
+        }
+        let mut closed: Vec<Dialog> = Vec::new();
+        for &(dialog, pos) in &self.dialogs {
+            let title = match dialog {
+                Dialog::About => "About VTube Collab",
+                Dialog::HowTo => "How to use VTube Collab",
+            };
+            let mut builder = egui::ViewportBuilder::default()
+                .with_title(title)
+                .with_inner_size(dialog.size())
+                .with_resizable(false)
+                .with_decorations(false) // drawn by us, XP-style
+                .with_transparent(true)
+                .with_icon(self.icon.clone());
+            if let Some(pos) = pos {
+                // Only used when the window is first created; afterwards it stays where it's dragged.
+                builder = builder.with_position(pos);
+            }
+            let close = ctx.show_viewport_immediate(egui::ViewportId::from_hash_of(title), builder, |ui, _class| {
+                let mut ok = false;
+                let ((), x) = xp::tool_window(ui, title, |ui| dialog_contents(ui, dialog, &mut ok));
+                let keys = ui.input(|i| i.key_pressed(egui::Key::Escape) || i.viewport().close_requested());
+                ok || x || keys
+            });
+            if close {
+                closed.push(dialog);
+            }
+        }
+        self.dialogs.retain(|(d, _)| !closed.contains(d));
+    }
+
+    fn status_right(&self) -> Option<String> {
+        match &self.screen {
+            Screen::Room { .. } => {
+                let people = format!("{} people", self.members.len() + 1);
+                Some(match self.sent_fps {
+                    Some(f) => format!("{people} · {f:.0} fps"),
+                    None => people,
+                })
+            }
+            _ => None,
+        }
     }
 }
 
-fn spinner_group(ui: &mut egui::Ui, title: &str, text: &str) {
-    xp::group(ui, title, |ui| {
-        ui.horizontal(|ui| {
-            ui.spinner();
-            ui.label(text);
-        });
+/// The text inside the About / How-to windows. `ok` is set when OK is clicked.
+fn dialog_contents(ui: &mut egui::Ui, dialog: Dialog, ok: &mut bool) {
+    match dialog {
+        Dialog::About => {
+            ui.horizontal(|ui| {
+                let (icon, _) = ui.allocate_exact_size(vec2(32.0, 32.0), egui::Sense::hover());
+                xp::paint_app_icon(ui.painter(), icon);
+                ui.vertical(|ui| {
+                    xp::bold_label(ui, "VTube Collab", 13.0);
+                    ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+                });
+            });
+            ui.add_space(6.0);
+            ui.label("Collab with VTubers using any VTubing app: avatars travel directly between your PCs, with transparency, into OBS.");
+            xp::hint(ui, "Uses GStreamer (LGPL) for video. Licences are in the 'licenses' folder.");
+        }
+        Dialog::HowTo => {
+            for step in [
+                "1. Turn on Spout2 output in your VTubing app.",
+                "2. Enter your name and pick your avatar.",
+                "3. Host: click \"Host a collab\", choose settings, and share the room code. \
+                 Accept people as they ask to join.",
+                "4. Join: click \"Join a collab\" and type the room code you were given.",
+                "5. In OBS, add a Spout2 Capture source for each person (\"Collab - <name>\"), \
+                 or one for everyone together (\"Collab - Group\").",
+                "6. Allow VTube Collab through Windows Firewall when asked.",
+            ] {
+                ui.label(step);
+            }
+        }
+    }
+    ui.with_layout(Layout::bottom_up(Align::Max), |ui| {
+        if xp::button(ui, "OK", true, true).clicked() {
+            *ok = true;
+        }
+    });
+}
+
+/// A row of buttons aligned to the right, XP-dialog style. Add them in reading order
+/// (e.g. Cancel, then OK); the last one ends up at the far right.
+fn button_row(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal(|ui| {
+        let width = ui.available_width();
+        // Measure the buttons first (invisibly), then place them flush right.
+        let id = ui.scope_id().with("button-row-width");
+        let used: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(0.0);
+        ui.add_space((width - used).max(0.0));
+        let start = ui.cursor().left();
+        ui.spacing_mut().item_spacing.x = 6.0;
+        add(ui);
+        let new_used = ui.min_rect().right() - start;
+        if (new_used - used).abs() > 0.5 {
+            ui.data_mut(|d| d.insert_temp(id, new_used));
+            ui.ctx().request_repaint();
+        }
+    });
+}
+
+fn spinner_line(ui: &mut egui::Ui, text: &str) {
+    ui.horizontal(|ui| {
+        ui.spinner();
+        ui.label(text);
     });
 }
 
@@ -757,27 +1011,51 @@ impl eframe::App for App {
         self.handle_worker_messages();
 
         let window = ui.max_rect();
-        xp::window_frame(ui, window);
+        let body = xp::window_frame(ui.painter(), window);
         xp::title_bar(ui, window, "VTube Collab");
 
-        let status_rect = Rect::from_min_max(
-            pos2(window.left() + 3.0, window.bottom() - 3.0 - STATUS_BAR_HEIGHT),
-            pos2(window.right() - 3.0, window.bottom() - 3.0),
+        // Menu bar, with a thin line under it.
+        let menu_rect = Rect::from_min_size(body.min, vec2(body.width(), xp::MENU_BAR_HEIGHT));
+        ui.painter().line_segment(
+            [menu_rect.left_bottom(), menu_rect.right_bottom()],
+            egui::Stroke::new(1.0, colour::GROUP_BORDER),
         );
+
+        let status_rect = Rect::from_min_max(pos2(body.left(), body.bottom() - xp::STATUS_BAR_HEIGHT), body.max);
         let content = Rect::from_min_max(
-            pos2(window.left() + 14.0, window.top() + xp::TITLE_BAR_HEIGHT + 12.0),
-            pos2(window.right() - 14.0, status_rect.top() - 8.0),
+            pos2(body.left() + MARGIN, menu_rect.bottom() + MARGIN),
+            pos2(body.right() - MARGIN, status_rect.top() - MARGIN),
         );
-        ui.scope_builder(UiBuilder::new().max_rect(content), |ui| {
-            // Scrolls if a big room doesn't fit.
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match self.screen {
-                Screen::Setup => self.setup_screen(ui),
-                Screen::HostSettings { .. } => self.host_settings_screen(ui),
-                Screen::Join { .. } => self.join_screen(ui),
-                Screen::HostLong { .. } => self.host_long_screen(ui),
-                Screen::Room { .. } => self.room_screen(ui),
-            });
-        });
-        xp::status_bar(ui, status_rect, &self.status);
+
+        // Contents; they scroll only if the window has reached its maximum height.
+        let max_content = MAX_WINDOW_HEIGHT - (window.height() - content.height());
+        let output = ui
+            .scope_builder(UiBuilder::new().max_rect(content), |ui| {
+                ui.spacing_mut().item_spacing.y = 8.0;
+                egui::ScrollArea::vertical().max_height(max_content).auto_shrink([false, true]).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 8.0;
+                    match self.screen {
+                        Screen::Setup => self.setup_screen(ui),
+                        Screen::HostSettings { .. } => self.host_settings_screen(ui),
+                        Screen::Join { .. } => self.join_screen(ui),
+                        Screen::HostLong { .. } => self.host_long_screen(ui),
+                        Screen::Room { .. } => self.room_screen(ui),
+                    }
+                })
+            })
+            .inner;
+
+        let right = self.status_right();
+        xp::status_bar(ui, status_rect, &self.status, right.as_deref());
+        self.menu_bar(ui, menu_rect);
+        self.dialog_windows(ui.ctx());
+
+        // Fit the window to its contents (Windows does this for XP dialogs, too).
+        let chrome = window.height() - content.height();
+        let wanted = (output.content_size.y + chrome).clamp(200.0, MAX_WINDOW_HEIGHT).round();
+        if (wanted - window.height()).abs() > 0.5 && (wanted - self.requested_height).abs() > 0.5 {
+            self.requested_height = wanted;
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(WINDOW_WIDTH, wanted)));
+        }
     }
 }

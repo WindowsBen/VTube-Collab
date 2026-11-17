@@ -40,8 +40,8 @@ pub enum FromWorker {
     Accepted(String),
     /// Long-code guest: our reply code, to send back to this partner.
     Reply { code: String, partner: String },
-    /// The group source's layer list, for the layers panel.
-    Group(collab::GroupLayers),
+    /// The group source's layer list and on/off switch, for the group panel.
+    Group(collab::GroupLayers, std::sync::Arc<std::sync::atomic::AtomicBool>),
     /// The collab ended (`Some(message)` if because of an error).
     Ended(Option<String>),
 }
@@ -69,7 +69,7 @@ impl Worker {
             match Room::host(&source, &name, settings, c.events.clone(), c.room_events.clone()) {
                 Ok((room, code)) => {
                     (c.send)(FromWorker::RoomCode(code));
-                    (c.send)(FromWorker::Group(room.group_layers()));
+                    (c.send)(FromWorker::Group(room.group_layers(), room.group_enabled()));
                     room.run(c.stop, forward_commands(c.inbox))
                 }
                 Err(e) => {
@@ -86,11 +86,11 @@ impl Worker {
             if collab::code::decode(&input).is_ok() {
                 let (conn, code, partner) = Connection::join(&source, &name, &input, c.events.clone())?;
                 (c.send)(FromWorker::Reply { code, partner });
-                (c.send)(FromWorker::Group(conn.group_layers()));
+                (c.send)(FromWorker::Group(conn.group_layers(), conn.group_enabled()));
                 conn.run(c.stop)
             } else {
                 let room = Room::join(&source, &name, &input, c.events.clone(), c.room_events.clone())?;
-                (c.send)(FromWorker::Group(room.group_layers()));
+                (c.send)(FromWorker::Group(room.group_layers(), room.group_enabled()));
                 room.run(c.stop, forward_commands(c.inbox))
             }
         })
@@ -177,7 +177,7 @@ fn host_long_codes(source: &str, name: &str, c: Ctx) -> Result<(), collab::Error
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
         }
     }
-    (c.send)(FromWorker::Group(conn.group_layers()));
+    (c.send)(FromWorker::Group(conn.group_layers(), conn.group_enabled()));
     conn.run(c.stop)
 }
 
