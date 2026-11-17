@@ -19,6 +19,8 @@ const FPS: u32 = 60;
 
 #[derive(Clone, Debug)]
 pub struct GroupLayer {
+    /// Which partner this is (their peer id), or `ME` for your own avatar.
+    pub id: String,
     /// What the window shows, e.g. "You (Ben)" or "Beat".
     pub label: String,
     /// The Spout source this layer shows.
@@ -37,13 +39,8 @@ pub fn partner_source(partner: &str) -> String {
     if name.eq_ignore_ascii_case(GROUP_SOURCE) { format!("{name} (partner)") } else { name }
 }
 
-/// Default layers: partner in front, you behind.
-pub fn default_layers(my_name: &str, my_source: &str, partner: &str) -> Vec<GroupLayer> {
-    vec![
-        GroupLayer { label: partner.to_string(), source: partner_source(partner), visible: true, is_me: false },
-        GroupLayer { label: format!("You ({my_name})"), source: my_source.to_string(), visible: true, is_me: true },
-    ]
-}
+/// Layer id used for your own avatar.
+pub const ME: &str = "me";
 
 /// Draw the group source at 60 fps until `stop` is set.
 pub fn spawn(layers: GroupLayers, stop: Arc<AtomicBool>, events: EventSink) -> JoinHandle<()> {

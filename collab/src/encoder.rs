@@ -21,7 +21,7 @@ pub fn pick(bitrate_kbps: u32, gop: u64) -> Result<Encoder, String> {
             "nvh264enc",
             "NVIDIA (NVENC)",
             format!(
-                "nvh264enc preset=p1 tune=ultra-low-latency zerolatency=true \
+                "nvh264enc name=enc preset=p1 tune=ultra-low-latency zerolatency=true \
                  rc-mode=cbr bitrate={bitrate_kbps} gop-size={gop} bframes=0"
             ),
         ),
@@ -30,7 +30,7 @@ pub fn pick(bitrate_kbps: u32, gop: u64) -> Result<Encoder, String> {
             "AMD (AMF)",
             format!(
                 "videoconvert n-threads=0 ! video/x-raw,format=NV12 \
-                 ! amfh264enc usage=ultra-low-latency preset=speed rate-control=cbr \
+                 ! amfh264enc name=enc usage=ultra-low-latency preset=speed rate-control=cbr \
                  bitrate={bitrate_kbps} gop-size={gop} b-frames=0"
             ),
         ),
@@ -39,7 +39,7 @@ pub fn pick(bitrate_kbps: u32, gop: u64) -> Result<Encoder, String> {
             "Windows Media Foundation",
             format!(
                 "videoconvert n-threads=0 ! video/x-raw,format=NV12 \
-                 ! mfh264enc low-latency=true rc-mode=cbr quality-vs-speed=0 \
+                 ! mfh264enc name=enc low-latency=true rc-mode=cbr quality-vs-speed=0 \
                  bitrate={bitrate_kbps} gop-size={gop}"
             ),
         ),

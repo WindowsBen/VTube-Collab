@@ -7,11 +7,21 @@ mod encoder;
 pub mod events;
 pub mod group;
 mod peer;
+pub mod room;
 pub mod rooms;
 mod session;
+pub mod signal;
 
 pub use connection::Connection;
-pub use events::{ConnState, Event, EventSink};
+pub use events::{ConnState, Event, EventSink, PartnerStats, PeerId};
+pub use room::{Room, RoomCommand, RoomEvent};
+pub use session::{DEFAULT_BUFFER_MS, MAX_BUFFER_MS, MIN_BUFFER_MS};
+pub use signal::RoomSettings;
+
+/// Limits for the "max people" room setting (counting the host).
+pub const MIN_PEOPLE: u32 = 2;
+pub const MAX_PEOPLE: u32 = 100;
+pub const DEFAULT_PEOPLE: u32 = 20;
 pub use group::{GroupLayer, GroupLayers, GROUP_SOURCE};
 pub use peer::Error;
 

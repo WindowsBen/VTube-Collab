@@ -85,7 +85,11 @@ Rough upload need per person (~3 Mbps per 720p30 stream with transparency):
 ## 6. Known issues (may revisit)
 - **Host received only ~50–55 fps** in the 2-PC test (2026-11-17), while the friend sent and received 60.
   Decoder confirmed on the RTX 3060 (not the AMD iGPU). Likely local load on the host PC, or packet loss
-  friend → host. If revisited: add packet-loss / RTT / skipped-frame stats to `[stats]`, enable NACK retransmission.
+  friend → host. Since then: NACK enabled, 120 ms buffer default, and per-partner loss diagnostics — the next
+  real test will show whether it's loss.
+- **Round-trip time in the diagnostics reads ~1 ms in local simulations** (netsim only delays media, not RTCP);
+  real connections should show real values — check in the next real test.
+- **Received fps fluctuates between 5 s windows** (e.g. 50 then 69) because frames arrive in bursts; the average is right.
 - **Resource use of the app** (measured 2026-11-17, two instances on one PC): idle < 0.2% CPU and ~200 MB RAM
   each; connected ~17.5% of total CPU (~2.1 cores) and ~500 MB each. Idle memory is mostly the OpenGL context /
   graphics driver; connected adds GStreamer, encoder/decoder and frame buffers. Possible later: zero-copy GPU path
@@ -162,8 +166,31 @@ Progress:
   row = "include me"), ▲/▼ to reorder; each person controls their own group source. Second copy on one PC
   publishes "Collab - Group 2". No measurable extra CPU.
 
-Code layout: `vtc-core/` (shared: Spout capture/output, packing), `collab/` (the app),
-`spout-probe/` and `encode-test/` (test tools).
+### Milestone 3 — rooms for 2–100 people
+- ✅ Room server v2 (`handshake/src/room_v2.js`, deployed alongside v1): one WebSocket per member to a
+  hibernating Durable Object. Host approves each joiner (Accept/Decline); newcomer gets "welcome" + member
+  list, others get "member_joined"; server only relays connection codes ("signals"). Host role passes to the
+  longest-standing member if the host leaves. Empty room deleted after 10 min. Free plan: hibernation = no
+  duration cost, incoming WS messages count 20:1, pings free.
+- ✅ Multi-partner session (`collab/src/session.rs`, `room.rs`, `signal.rs`): encode once → `tee` → per-partner
+  queue → RTP → own `webrtcbin`; per-partner decoder + Spout source + group layer. Newcomer makes offers to
+  everyone already there. Bitrate per partner = 24 Mbit/s upload budget ÷ partners, clamped 2.5–8 Mbit/s.
+- ✅ Host room settings (sent in the create request, enforced by the server, delivered in "welcome"):
+  **max people 2–100 (default 20, counts the host)**, **receive buffer 20–500 ms (default 120)** applied by everyone.
+- ✅ Loss handling: NACK on every transceiver; receiver `rtph264depay request-keyframe=true wait-for-keyframe=true`
+  (damaged frames dropped + fresh keyframe requested instead of smearing).
+  Background: 3-person test (2026-11-17, Canada) — one friend saw another's avatar smear while moving; link-specific
+  packet loss with a 50 ms buffer too short for resends. Reproduced on one PC with `VTC_SIMULATE_LOSS=0.03`
+  `VTC_SIMULATE_DELAY_MS=60` (test-only `netsim` via webrtcbin "request-aux-sender"):
+  50 ms buffer → 16–26 fps, ~110 unrepaired losses/5 s; **120 ms → 50–59 fps, 1–12 unrepaired, clean picture**.
+- ✅ Diagnostics per partner: packet loss % (raw, from nested `gst-rtpsource-stats`), "unrepaired" (FIR+PLI
+  count = frames skipped), round-trip time. App shows "N skipped (try a bigger buffer)" in red when frequent.
+- Not verifiable on one PC: 3+ people at full rate (3 copies = 3 encodes + 6 decodes on one GPU → ~15 fps).
+  2 people in a v2 room: ~57–60 fps. Needs a real multi-PC test; receive path CPU per partner will matter for
+  big rooms (→ zero-copy decode/unpack on the GPU).
+
+Code layout: `vtc-core/` (shared: Spout capture/output, packing, GPU, compositor), `collab/` (connection engine +
+CLI), `app/` (window), `handshake/` (Cloudflare server), `spout-probe/` and `encode-test/` (test tools).
 
 ### Setup steps (in order)
 1. ✅ Write this design document

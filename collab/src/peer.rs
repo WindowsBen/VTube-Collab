@@ -121,8 +121,8 @@ pub fn apply_remote(webrtc: &gst::Element, kind: gst_webrtc::WebRTCSDPType, code
     Ok(())
 }
 
-/// Report connection state changes (connecting → connected, or failed).
-pub fn report_connection_state(webrtc: &gst::Element, events: EventSink) {
+/// Report connection state changes (connecting → connected, or failed) for partner `peer`.
+pub fn report_connection_state(webrtc: &gst::Element, peer: String, events: EventSink) {
     webrtc.connect_notify(Some("ice-connection-state"), move |webrtc, _| {
         use gst_webrtc::WebRTCICEConnectionState as S;
         let state = match webrtc.property::<S>("ice-connection-state") {
@@ -133,7 +133,7 @@ pub fn report_connection_state(webrtc: &gst::Element, events: EventSink) {
             S::Closed => ConnState::Closed,
             _ => return,
         };
-        events(Event::Connection(state));
+        events(Event::Connection { peer: peer.clone(), state });
     });
 }
 

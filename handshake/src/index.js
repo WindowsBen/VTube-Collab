@@ -13,6 +13,8 @@
 // same answer to everyone, wherever in the world they connect from.
 
 import { DurableObject } from "cloudflare:workers";
+export { RoomV2 } from "./room_v2.js"; // v2: rooms for 2–100 people (see room_v2.js)
+import { roomSettings } from "./room_v2.js";
 
 // A room waits 10 minutes for a guest. (Setting ROOM_LIFETIME_SECONDS overrides
 // this, e.g. `wrangler dev --var ROOM_LIFETIME_SECONDS:5` to test expiry quickly.)
@@ -126,6 +128,41 @@ export default {
     const url = new URL(request.url);
     const parts = url.pathname.split("/").filter(Boolean); // e.g. ["rooms", "MINTY-OTTER-42", "reply"]
     const room = (code) => env.ROOMS.get(env.ROOMS.idFromName(code));
+
+    // ---- v2 (2–100 people) ----
+    //   POST /v2/rooms  body (optional): {max_people, buffer_ms}
+    //                                          → 201 {code, token, settings}   (token = host's secret)
+    //   GET  /v2/rooms/<code>/ws?name=..&token=..   WebSocket into the room
+    if (parts[0] === "v2" && parts[1] === "rooms") {
+      const roomV2 = (code) => env.ROOMS2.get(env.ROOMS2.idFromName(code));
+      if (parts.length === 2 && request.method === "POST") {
+        let body = {};
+        try {
+          const raw = await request.text();
+          if (raw.length > 0 && raw.length < 1024) body = JSON.parse(raw);
+        } catch {
+          // Not JSON: use the defaults.
+        }
+        const settings = roomSettings(body);
+        for (let attempt = 0; attempt < 5; attempt++) {
+          const code = newRoomCode();
+          const token = await roomV2(code).create(settings);
+          if (token) {
+            return new Response(JSON.stringify({ code, token, settings }), {
+              status: 201,
+              headers: { "content-type": "application/json" },
+            });
+          }
+        }
+        return text("couldn't find a free room code, try again", 503);
+      }
+      if (parts.length === 4 && parts[3] === "ws") {
+        const code = normaliseRoomCode(parts[2]);
+        if (!code) return text("not a room code", 404);
+        return roomV2(code).fetch(request);
+      }
+      return text("not found", 404);
+    }
 
     if (parts[0] !== "rooms") {
       return text("VTube Collab handshake server", 200);

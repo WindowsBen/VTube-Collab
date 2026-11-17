@@ -1,49 +1,48 @@
-//! Runs a collab connection on a background thread, so the window never freezes.
+//! Runs a collab on a background thread, so the window never freezes.
 //!
 //! The window and the worker talk through two channels:
-//!   window → worker: `ToWorker` (e.g. a pasted long reply code)
-//!   worker → window: `FromWorker` (codes, connection events, the end)
+//!   window → worker: `ToWorker` (approve/decline someone, a pasted long reply code)
+//!   worker → window: `FromWorker` (room code, room/connection events, the end)
 //! Every message to the window also asks egui to redraw, so it shows up at once.
+//!
+//! Two kinds of collab:
+//!   * a room (normal): 2–20 people, one room code, the host approves who joins
+//!   * long codes (fallback, two people): copy-paste codes, no room server needed
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use collab::rooms::{self, RoomError};
-use collab::{code, Connection, Event, EventSink};
+use collab::{Connection, Event, EventSink, PeerId, Room, RoomCommand, RoomEvent, RoomSettings};
 use eframe::egui;
 
-/// How often the host checks the room for the guest's reply.
-const POLL_EVERY: Duration = Duration::from_secs(1);
-
 pub enum ToWorker {
-    /// Host, long-code mode: the partner's reply code, as pasted.
+    Approve(PeerId),
+    Decline(PeerId),
+    /// Long-code host: the partner's reply code, as pasted.
     Reply(String),
 }
 
 pub enum FromWorker {
     Event(Event),
-    /// Host: short room code ready.
+    Room(RoomEvent),
+    /// Host: the room is open; share this code.
     RoomCode(String),
-    /// Host: room codes can't be used right now (why); long codes still work.
+    /// Host: rooms can't be used right now (why); fall back to long codes.
     RoomUnavailable(String),
-    /// Host: nobody joined before the room code expired.
-    RoomExpired,
-    /// Host: our long invite code (fallback).
+    /// Long-code host: our invite code.
     Invite(String),
-    /// Host: a pasted long reply code was wrong (message says why).
+    /// Long-code host: a pasted reply code was wrong (message says why).
     ReplyRejected(String),
-    /// Host: a partner joined; connecting.
+    /// Long-code host: the partner's reply was accepted; connecting.
     Accepted(String),
-    /// Guest (long codes): our reply code is ready to send back to this partner.
+    /// Long-code guest: our reply code, to send back to this partner.
     Reply { code: String, partner: String },
-    /// Guest (room code): reply delivered automatically; connecting to this partner.
-    ReplySent(String),
     /// The group source's layer list, for the layers panel.
     Group(collab::GroupLayers),
-    /// The connection ended (`Some(message)` if because of an error).
+    /// The collab ended (`Some(message)` if because of an error).
     Ended(Option<String>),
 }
 
@@ -54,98 +53,53 @@ pub struct Worker {
     thread: Option<JoinHandle<()>>,
 }
 
-impl Worker {
-    pub fn host(source: String, name: String, ctx: egui::Context) -> Worker {
-        Self::spawn(ctx, move |send, events, inbox, stop| {
-            let (mut conn, invite) = Connection::host(&source, &name, events)?;
+/// What a worker job gets to work with.
+struct Ctx<'a> {
+    send: &'a dyn Fn(FromWorker),
+    events: EventSink,
+    room_events: Arc<dyn Fn(RoomEvent) + Send + Sync>,
+    inbox: Receiver<ToWorker>,
+    stop: &'a AtomicBool,
+}
 
-            // A short room code if the server is reachable; the long code always works too.
-            let mut room = match rooms::create(&invite) {
-                Ok(code) => {
-                    send(FromWorker::RoomCode(code.clone()));
-                    Some(code)
+impl Worker {
+    /// Open a room with `settings`. If the room server can't be reached, falls back to long codes.
+    pub fn host(source: String, name: String, settings: RoomSettings, ctx: egui::Context) -> Worker {
+        Self::spawn(ctx, move |c| {
+            match Room::host(&source, &name, settings, c.events.clone(), c.room_events.clone()) {
+                Ok((room, code)) => {
+                    (c.send)(FromWorker::RoomCode(code));
+                    (c.send)(FromWorker::Group(room.group_layers()));
+                    room.run(c.stop, forward_commands(c.inbox))
                 }
                 Err(e) => {
-                    send(FromWorker::RoomUnavailable(e.to_string()));
-                    None
-                }
-            };
-            send(FromWorker::Invite(invite));
-
-            // Wait for the partner: through the room, or a pasted long reply code.
-            let mut last_poll = Instant::now() - POLL_EVERY;
-            loop {
-                if stop.load(Ordering::Relaxed) {
-                    return Ok(());
-                }
-                match inbox.recv_timeout(Duration::from_millis(100)) {
-                    Ok(ToWorker::Reply(text)) => match conn.accept_reply(&text) {
-                        Ok(partner) => {
-                            send(FromWorker::Accepted(partner));
-                            break;
-                        }
-                        Err(e) => send(FromWorker::ReplyRejected(e.to_string())),
-                    },
-                    Err(RecvTimeoutError::Disconnected) => return Ok(()),
-                    Err(RecvTimeoutError::Timeout) => {}
-                }
-                if let Some(code) = &room {
-                    if last_poll.elapsed() >= POLL_EVERY {
-                        last_poll = Instant::now();
-                        match rooms::poll_reply(code) {
-                            Ok(Some(reply)) => {
-                                let partner = conn.accept_reply(&reply)?;
-                                send(FromWorker::Accepted(partner));
-                                break;
-                            }
-                            Ok(None) => {}
-                            Err(RoomError::NotFound) => {
-                                send(FromWorker::RoomExpired);
-                                room = None;
-                            }
-                            // A network hiccup: just try again next second.
-                            Err(_) => {}
-                        }
-                    }
+                    (c.send)(FromWorker::RoomUnavailable(e.to_string()));
+                    host_long_codes(&source, &name, c)
                 }
             }
-            send(FromWorker::Group(conn.group_layers()));
-            conn.run(&stop)
         })
     }
 
-    /// `input` = a room code (MINTY-OTTER-42) or a long invite code (VTC1-...).
+    /// Join with a room code, or a long invite code (VTC1-...).
     pub fn join(source: String, name: String, input: String, ctx: egui::Context) -> Worker {
-        Self::spawn(ctx, move |send, events, _inbox, stop| {
-            let room = if code::decode(&input).is_ok() { None } else { rooms::normalise(&input) };
-            let invite = match &room {
-                Some(room) => rooms::take_invite(room)?,
-                None => input,
-            };
-            let (conn, reply, partner) = Connection::join(&source, &name, &invite, events)?;
-            match &room {
-                Some(room) => {
-                    rooms::put_reply(room, &reply)?;
-                    send(FromWorker::ReplySent(partner));
-                }
-                None => send(FromWorker::Reply { code: reply, partner }),
+        Self::spawn(ctx, move |c| {
+            if collab::code::decode(&input).is_ok() {
+                let (conn, code, partner) = Connection::join(&source, &name, &input, c.events.clone())?;
+                (c.send)(FromWorker::Reply { code, partner });
+                (c.send)(FromWorker::Group(conn.group_layers()));
+                conn.run(c.stop)
+            } else {
+                let room = Room::join(&source, &name, &input, c.events.clone(), c.room_events.clone())?;
+                (c.send)(FromWorker::Group(room.group_layers()));
+                room.run(c.stop, forward_commands(c.inbox))
             }
-            send(FromWorker::Group(conn.group_layers()));
-            conn.run(&stop)
         })
     }
 
     /// Start the thread running `job`, and report how it ended.
     fn spawn(
-        ctx: egui::Context,
-        job: impl FnOnce(
-            &dyn Fn(FromWorker),
-            EventSink,
-            &Receiver<ToWorker>,
-            &AtomicBool,
-        ) -> Result<(), collab::Error>
-            + Send
-            + 'static,
+        egui_ctx: egui::Context,
+        job: impl FnOnce(Ctx) -> Result<(), collab::Error> + Send + 'static,
     ) -> Worker {
         let (to_worker, inbox) = mpsc::channel();
         let (outbox, from_worker) = mpsc::channel::<FromWorker>();
@@ -153,27 +107,26 @@ impl Worker {
 
         let thread_stop = stop.clone();
         let thread = std::thread::spawn(move || {
-            // `send` = deliver a message to the window and ask it to redraw.
-            let send = {
-                let outbox = outbox.clone();
-                let ctx = ctx.clone();
+            // Every message to the window also asks it to redraw. A Mutex makes the
+            // channel end shareable, since events can come from any thread.
+            let outbox = Arc::new(Mutex::new(outbox));
+            let deliver = {
+                let (outbox, egui_ctx) = (outbox.clone(), egui_ctx.clone());
                 move |msg: FromWorker| {
-                    let _ = outbox.send(msg);
-                    ctx.request_repaint();
+                    let _ = outbox.lock().unwrap().send(msg);
+                    egui_ctx.request_repaint();
                 }
             };
-            // Connection events go to the window the same way. A Mutex makes the
-            // channel end shareable, since events can come from any thread.
             let events: EventSink = {
-                let outbox = std::sync::Mutex::new(outbox.clone());
-                let ctx = ctx.clone();
-                Arc::new(move |e| {
-                    let _ = outbox.lock().unwrap().send(FromWorker::Event(e));
-                    ctx.request_repaint();
-                })
+                let deliver = deliver.clone();
+                Arc::new(move |e| deliver(FromWorker::Event(e)))
             };
-            let result = job(&send, events, &inbox, &thread_stop);
-            send(FromWorker::Ended(result.err().map(|e| e.to_string())));
+            let room_events: Arc<dyn Fn(RoomEvent) + Send + Sync> = {
+                let deliver = deliver.clone();
+                Arc::new(move |e| deliver(FromWorker::Room(e)))
+            };
+            let result = job(Ctx { send: &deliver, events, room_events, inbox, stop: &thread_stop });
+            deliver(FromWorker::Ended(result.err().map(|e| e.to_string())));
         });
 
         Worker { to_worker, from_worker, stop, thread: Some(thread) }
@@ -184,9 +137,53 @@ impl Worker {
     }
 }
 
+/// Pass the window's Accept/Decline clicks on to the room.
+fn forward_commands(inbox: Receiver<ToWorker>) -> Receiver<RoomCommand> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        // Ends when the window's side of the channel is dropped (collab over).
+        for msg in inbox {
+            let cmd = match msg {
+                ToWorker::Approve(id) => RoomCommand::Approve(id),
+                ToWorker::Decline(id) => RoomCommand::Decline(id),
+                ToWorker::Reply(_) => continue,
+            };
+            if tx.send(cmd).is_err() {
+                break;
+            }
+        }
+    });
+    rx
+}
+
+/// Two-person fallback: show a long invite code, wait for a pasted reply code.
+fn host_long_codes(source: &str, name: &str, c: Ctx) -> Result<(), collab::Error> {
+    let (mut conn, invite) = Connection::host(source, name, c.events.clone())?;
+    (c.send)(FromWorker::Invite(invite));
+    loop {
+        if c.stop.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        match c.inbox.recv_timeout(Duration::from_millis(100)) {
+            Ok(ToWorker::Reply(text)) => match conn.accept_reply(&text) {
+                Ok(partner) => {
+                    (c.send)(FromWorker::Accepted(partner));
+                    break;
+                }
+                Err(e) => (c.send)(FromWorker::ReplyRejected(e.to_string())),
+            },
+            Ok(_) => {}
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return Ok(()),
+        }
+    }
+    (c.send)(FromWorker::Group(conn.group_layers()));
+    conn.run(c.stop)
+}
+
 impl Drop for Worker {
-    /// Leaving / closing the window: stop the connection and wait for clean-up
-    /// (this removes our partner's Spout source from OBS's list).
+    /// Leaving / closing the window: stop the collab and wait for clean-up
+    /// (this removes our Spout sources from OBS's list).
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(t) = self.thread.take() {

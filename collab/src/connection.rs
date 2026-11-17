@@ -1,4 +1,5 @@
-//! A collab connection, step by step. Used by both the app window and the command line.
+//! A two-person collab using copy-paste long codes (no room server needed).
+//! This is the fallback when room codes can't be used; rooms (room.rs) are the normal way.
 //!
 //!   Host:  Connection::host(...)  → invite code   (send to partner)
 //!          conn.accept_reply(...) ← reply code    (from partner)
@@ -19,7 +20,10 @@ use crate::code;
 use crate::events::{Event, EventSink};
 use crate::group::GroupLayers;
 use crate::peer::{self, Error};
-use crate::session::Session;
+use crate::session::{Role, Session};
+
+/// The one partner's id in a two-person connection.
+const PARTNER: &str = "partner";
 
 pub struct Connection {
     session: Session,
@@ -34,10 +38,13 @@ impl Connection {
         let packer = open_avatar(sender_name)?;
         gst::init()?;
         let mut session = Session::start(packer.width as usize, packer.height as usize, events.clone())?;
+        session.add_partner(PARTNER, "partner", Role::Offerer)?;
 
         events(Event::Info("Preparing invite code (finding your network addresses)...".into()));
-        let local_sdp = peer::create_local(&session.webrtc, gst_webrtc::WebRTCSDPType::Offer)?;
-        let invite = code::encode(&session.take_gatherer().into_code(my_name, local_sdp, &events));
+        let webrtc = session.partner_webrtc(PARTNER).expect("just added");
+        let local_sdp = peer::create_local(&webrtc, gst_webrtc::WebRTCSDPType::Offer)?;
+        let gatherer = session.take_gatherer(PARTNER).expect("just added");
+        let invite = code::encode(&gatherer.into_code(my_name, local_sdp, &events));
 
         let conn = Connection { session, packer, sender_name: sender_name.to_string(), my_name: my_name.to_string() };
         Ok((conn, invite))
@@ -47,8 +54,9 @@ impl Connection {
     /// A badly pasted code returns an error and can simply be tried again.
     pub fn accept_reply(&mut self, reply_text: &str) -> Result<String, Error> {
         let reply = code::decode(reply_text)?;
-        self.session.set_partner(&reply.name);
-        peer::apply_remote(&self.session.webrtc, gst_webrtc::WebRTCSDPType::Answer, &reply)?;
+        self.session.rename_partner(PARTNER, &reply.name);
+        let webrtc = self.session.partner_webrtc(PARTNER).expect("added in host()");
+        peer::apply_remote(&webrtc, gst_webrtc::WebRTCSDPType::Answer, &reply)?;
         Ok(reply.name)
     }
 
@@ -64,31 +72,33 @@ impl Connection {
         let packer = open_avatar(sender_name)?;
         gst::init()?;
         let mut session = Session::start(packer.width as usize, packer.height as usize, events.clone())?;
-        session.set_partner(&invite.name);
+        session.add_partner(PARTNER, &invite.name, Role::Answerer)?;
 
-        peer::apply_remote(&session.webrtc, gst_webrtc::WebRTCSDPType::Offer, &invite)?;
+        let webrtc = session.partner_webrtc(PARTNER).expect("just added");
+        peer::apply_remote(&webrtc, gst_webrtc::WebRTCSDPType::Offer, &invite)?;
         events(Event::Info("Preparing reply code (finding your network addresses)...".into()));
-        let local_sdp = peer::create_local(&session.webrtc, gst_webrtc::WebRTCSDPType::Answer)?;
-        let reply = code::encode(&session.take_gatherer().into_code(my_name, local_sdp, &events));
+        let local_sdp = peer::create_local(&webrtc, gst_webrtc::WebRTCSDPType::Answer)?;
+        let gatherer = session.take_gatherer(PARTNER).expect("just added");
+        let reply = code::encode(&gatherer.into_code(my_name, local_sdp, &events));
 
         let conn = Connection { session, packer, sender_name: sender_name.to_string(), my_name: my_name.to_string() };
         Ok((conn, reply, invite.name))
     }
 
     /// The group source's layer list. The app window keeps this handle to reorder
-    /// and hide layers while the collab runs (it fills in once `run` starts).
+    /// and hide layers while the collab runs.
     pub fn group_layers(&self) -> GroupLayers {
         self.session.group_layers.clone()
     }
 
     /// Send and receive until `stop` becomes true. Cleans up (removes the Spout sources) on exit.
     pub fn run(self, stop: &AtomicBool) -> Result<(), Error> {
-        self.session.run(&self.sender_name, &self.my_name, self.packer, stop)
+        self.session.run(&self.sender_name, &self.my_name, self.packer, stop, |_| Ok(()))
     }
 }
 
 /// Open our avatar's Spout2 sender for GPU packing, with a helpful message if it isn't running.
-fn open_avatar(sender_name: &str) -> Result<Packer, Error> {
+pub(crate) fn open_avatar(sender_name: &str) -> Result<Packer, Error> {
     let info = spout::read_sender_info(sender_name).ok_or_else(|| {
         format!("No Spout2 source called \"{sender_name}\". Is your VTubing app running with Spout2 output on?")
     })?;
