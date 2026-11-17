@@ -1,10 +1,8 @@
-//! Small helpers for the command-line interface: showing and reading codes.
+//! Small helpers for the command-line tool: showing codes, reading lines.
 
 use std::io::{BufRead, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-
-use crate::code::{self, Code};
 
 /// Print a code and try to copy it to the clipboard (Windows' built-in `clip` tool).
 pub fn show_code(label: &str, text: &str) {
@@ -26,23 +24,15 @@ pub fn show_code(label: &str, text: &str) {
     }
 }
 
-/// Ask for a code until a valid one is pasted.
-pub fn read_code(prompt: &str) -> Result<Code, Box<dyn std::error::Error>> {
-    let stdin = std::io::stdin();
-    loop {
-        print!("{prompt}");
-        std::io::stdout().flush()?;
-        let mut line = String::new();
-        if stdin.lock().read_line(&mut line)? == 0 {
-            return Err("no code entered".into());
-        }
-        // Accept the line with or without the "CODE: " label.
-        let line = line.trim().trim_start_matches("CODE:").trim();
-        match code::decode(line) {
-            Ok(code) => return Ok(code),
-            Err(e) => println!("Couldn't use that code: {e}. Try again."),
-        }
+/// Ask for one line of input (with the "CODE:" label removed if pasted along).
+pub fn read_line(prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
+    print!("{prompt}");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    if std::io::stdin().lock().read_line(&mut line)? == 0 {
+        return Err("no input".into());
     }
+    Ok(line.trim().trim_start_matches("CODE:").trim().to_string())
 }
 
 /// Returns a flag that becomes `true` once Enter is pressed (or input closes).

@@ -6,7 +6,10 @@
 #
 # Layout (GStreamer finds its plugins relative to its own DLLs, so this must be kept):
 #   VTubeCollab\
-#     bin\collab.exe + GStreamer core DLLs + Microsoft C++ runtime DLLs
+#     Start VTube Collab.bat    double-click to open the app window
+#     bin\VTubeCollab.exe       the app window
+#     bin\collab.exe            command-line tool (for testing)
+#     bin\                      + GStreamer core DLLs + Microsoft C++ runtime DLLs
 #     lib\gstreamer-1.0\        only the plugins collab uses
 #     libexec\gstreamer-1.0\    gst-plugin-scanner.exe (GStreamer's plugin checker)
 #     licenses\                 GStreamer's licence texts (required by the LGPL)
@@ -50,9 +53,9 @@ $plugins = @(
 )
 
 # ---- Build collab ----
-Write-Host "Building collab (release)..."
+Write-Host "Building VTubeCollab.exe and collab.exe (release)..."
 Push-Location $root
-cargo build --release -p collab
+cargo build --release -p collab -p app
 if ($LASTEXITCODE -ne 0) { Pop-Location; throw "build failed" }
 Pop-Location
 
@@ -63,6 +66,7 @@ foreach ($d in 'bin', 'lib\gstreamer-1.0', 'libexec\gstreamer-1.0', 'licenses') 
     New-Item -ItemType Directory -Force (Join-Path $bundle $d) | Out-Null
 }
 
+Copy-Item "$root\target\release\VTubeCollab.exe" "$bundle\bin\"
 Copy-Item "$root\target\release\collab.exe" "$bundle\bin\"
 Copy-Item "$gst\libexec\gstreamer-1.0\gst-plugin-scanner.exe" "$bundle\libexec\gstreamer-1.0\"
 foreach ($p in $plugins) { Copy-Item "$gst\lib\gstreamer-1.0\$p.dll" "$bundle\lib\gstreamer-1.0\" }
@@ -71,6 +75,7 @@ foreach ($p in $plugins) { Copy-Item "$gst\lib\gstreamer-1.0\$p.dll" "$bundle\li
 # `dumpbin /dependents` lists the DLLs a file loads. DLLs not in GStreamer's bin folder
 # are part of Windows (or the C++ runtime, handled below) and are skipped.
 $queue = New-Object System.Collections.Queue
+$queue.Enqueue("$bundle\bin\VTubeCollab.exe")
 $queue.Enqueue("$bundle\bin\collab.exe")
 $queue.Enqueue("$bundle\libexec\gstreamer-1.0\gst-plugin-scanner.exe")
 foreach ($p in $plugins) { $queue.Enqueue("$bundle\lib\gstreamer-1.0\$p.dll") }
@@ -103,21 +108,29 @@ VTube Collab - test build
 Requirements: Windows 10/11, the OBS Spout2 plugin, a VTubing app with Spout2 output turned on.
 Nothing else to install.
 
-Open a terminal in the 'bin' folder (Shift + right-click > Open in Terminal), then:
+Before unzipping: right-click the zip > Properties > tick "Unblock" > OK.
 
-  Start a collab (host):
-    .\collab.exe host "<your Spout sender name>" --name <your name>
-    -> copy the INVITE code to your partner, paste their REPLY code back.
+1. Turn on Spout2 output in your VTubing app.
+2. Double-click "Start VTube Collab.bat".
+3. Enter your name and pick your avatar from the list.
+4. One person clicks "Host a collab" and sends the invite code (Copy button) to the other.
+   The other clicks "Join a collab", pastes it, and sends the reply code back.
+   The host pastes the reply code and clicks Connect.
+5. In OBS, add a Spout2 Capture source and pick "Collab - <partner's name>".
 
-  Join a collab:
-    .\collab.exe join "<your Spout sender name>" --name <your name>
-    -> paste the INVITE code, send the REPLY code back.
+Allow VTube Collab through Windows Firewall when asked. Windows may warn that the app
+is unrecognised (it isn't signed yet): click "More info" > "Run anyway".
 
-Your partner appears in OBS as Spout2 source "Collab - <their name>" (Spout2 Capture).
-Press Enter to stop. Allow collab.exe through Windows Firewall when asked.
+Command-line version (for testing), in the 'bin' folder:
+    collab.exe list
+    collab.exe host "Avatar Live" --name Ben
+    collab.exe join "Warudo Camera 1" --name Beat
 
 Includes GStreamer (LGPL) and Microsoft C++ runtime libraries; licences in the 'licenses' folder.
 "@ | Set-Content "$bundle\README.txt" -Encoding UTF8
+
+# Double-click starter next to the readme (the .exe must stay in bin\ with its DLLs).
+"@echo off`r`nstart `"`" `"%~dp0bin\VTubeCollab.exe`"`r`n" | Set-Content "$bundle\Start VTube Collab.bat" -Encoding ASCII -NoNewline
 
 Compress-Archive -Path $bundle -DestinationPath $zip
 

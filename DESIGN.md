@@ -86,6 +86,10 @@ Rough upload need per person (~3 Mbps per 720p30 stream with transparency):
 - **Host received only ~50–55 fps** in the 2-PC test (2026-11-17), while the friend sent and received 60.
   Decoder confirmed on the RTX 3060 (not the AMD iGPU). Likely local load on the host PC, or packet loss
   friend → host. If revisited: add packet-loss / RTT / skipped-frame stats to `[stats]`, enable NACK retransmission.
+- **Resource use of the app** (measured 2026-11-17, two instances on one PC): idle < 0.2% CPU and ~200 MB RAM
+  each; connected ~17.5% of total CPU (~2.1 cores) and ~500 MB each. Idle memory is mostly the OpenGL context /
+  graphics driver; connected adds GStreamer, encoder/decoder and frame buffers. Possible later: zero-copy GPU path
+  (CPU), smaller buffers / wgpu renderer (memory).
 
 ## 7. Open questions
 - UI library: Slint or egui?
@@ -133,6 +137,15 @@ Progress:
   other's Spout source in OBS. Latency not measured yet.
 - Usability notes from the test: users need to know their exact Spout sender name (consider `collab list`);
   README placeholders `<...>` were typed literally.
+
+### Milestone 2 — usable by non-technical VTubers
+- ✅ App window (`app/` → `VTubeCollab.exe`): egui/eframe 0.37, hand-drawn **XP Luna Blue** look
+  (own title bar, rounded top corners, bevel buttons, group boxes, status bar, Tahoma from the user's
+  Windows fonts — not shipped). Screens: Setup (name + avatar dropdown of Spout sources) → Host / Join
+  (codes with Copy buttons) → Collab (status dot, OBS source name, fps). Connection runs on a worker thread.
+- ✅ `collab` split into a library (`Connection` API + events) and the CLI; new `collab list`.
+- ✅ Bundle includes the app + `Start VTube Collab.bat` (17.9 MB zip).
+- ⬜ Short room codes via a free Cloudflare handshake server.
 
 Code layout: `vtc-core/` (shared: Spout capture/output, packing), `collab/` (the app),
 `spout-probe/` and `encode-test/` (test tools).

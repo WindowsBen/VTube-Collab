@@ -1,0 +1,14 @@
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2024"
+
+# The program is called VTubeCollab.exe.
+[[bin]]
+name = "VTubeCollab"
+path = "src/main.rs"
+
+[dependencies]
+collab = { version = "0.1.0", path = "../collab" }
+eframe = "0.37.0"
+vtc-core = { version = "0.1.0", path = "../vtc-core" }

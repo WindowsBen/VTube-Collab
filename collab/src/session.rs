@@ -24,8 +24,8 @@ use vtc_core::gpu::{Nv12Layout, Packer, Unpacker};
 use vtc_core::sender::SpoutSender;
 use vtc_core::spout;
 
-use crate::console;
 use crate::encoder;
+use crate::events::{Event, EventSink};
 use crate::peer::{self, Error};
 
 pub const FPS: u64 = 60;
@@ -53,13 +53,14 @@ pub struct Session {
     partner: Arc<Mutex<String>>,
     spout_stop: Arc<AtomicBool>,
     spout_thread: Option<JoinHandle<Result<(), String>>>,
+    events: EventSink,
 }
 
 impl Session {
     /// Build the pipeline for sending a `w`×`h` avatar, and start it.
-    pub fn start(w: usize, h: usize) -> Result<Session, Error> {
+    pub fn start(w: usize, h: usize, events: EventSink) -> Result<Session, Error> {
         let enc = encoder::pick(BITRATE_KBPS, FPS)?;
-        println!("Encoder: {}", enc.label);
+        events(Event::Info(format!("Encoder: {}", enc.label)));
 
         // We send packed NV12 frames (twice the avatar width) in BT.709 limited range,
         // exactly what the GPU pack shader produces.
@@ -91,14 +92,14 @@ impl Session {
 
         let (frame_tx, frame_rx) = mpsc::sync_channel::<Frame>(2);
         let received = Arc::new(AtomicU64::new(0));
-        attach_receiver(&pipeline, &webrtc, frame_tx, received.clone());
+        attach_receiver(&pipeline, &webrtc, frame_tx, received.clone(), events.clone());
 
         let partner = Arc::new(Mutex::new(String::from("partner")));
         let spout_stop = Arc::new(AtomicBool::new(false));
-        let spout_thread = spawn_spout_thread(frame_rx, partner.clone(), spout_stop.clone());
+        let spout_thread = spawn_spout_thread(frame_rx, partner.clone(), spout_stop.clone(), events.clone());
 
-        peer::watch_bus(&pipeline);
-        peer::log_connection_state(&webrtc);
+        peer::watch_bus(&pipeline, events.clone());
+        peer::report_connection_state(&webrtc, events.clone());
         // Attach before negotiation starts, so no address is missed.
         let gatherer = peer::Gatherer::attach(&webrtc);
         pipeline.set_state(gst::State::Playing)?;
@@ -113,6 +114,7 @@ impl Session {
             partner,
             spout_stop,
             spout_thread: Some(spout_thread),
+            events,
         })
     }
 
@@ -126,11 +128,16 @@ impl Session {
         *self.partner.lock().unwrap() = name.to_string();
     }
 
-    /// Capture, send and report until Enter is pressed, then shut down cleanly.
-    pub fn run(mut self, sender_name: &str, mut packer: Packer) -> Result<(), Error> {
+    /// Capture, send and report until `stop` becomes true, then shut down cleanly.
+    pub fn run(mut self, sender_name: &str, packer: Packer, stop: &AtomicBool) -> Result<(), Error> {
+        let result = self.send_loop(sender_name, packer, stop);
+        self.shutdown(); // always clean up (removes our Spout source), even after an error
+        result
+    }
+
+    fn send_loop(&mut self, sender_name: &str, mut packer: Packer, stop: &AtomicBool) -> Result<(), Error> {
         let (w, h) = (packer.width, packer.height);
-        println!("Sending \"{sender_name}\" ({w}×{h}). Press Enter to stop.");
-        let enter = console::stop_on_enter();
+        (self.events)(Event::Info(format!("Sending \"{sender_name}\" ({w}×{h}).")));
 
         let layout = Nv12Layout {
             y_offset: self.send_info.offset()[0],
@@ -147,7 +154,7 @@ impl Session {
         let mut last_report = Instant::now();
 
         let mut i: u64 = 0;
-        while !enter.load(Ordering::Relaxed) {
+        while !stop.load(Ordering::Relaxed) {
             // If the avatar app restarted, reopen it (size must stay the same for now).
             if i % FPS == 0 {
                 if let Some(now) = spout::read_sender_info(sender_name) {
@@ -178,11 +185,10 @@ impl Session {
             let since = last_report.elapsed();
             if since >= Duration::from_secs(5) {
                 let received = self.received.load(Ordering::Relaxed);
-                println!(
-                    "[stats] sent {:.1} fps | received {:.1} fps",
-                    (sent - last_sent) as f64 / since.as_secs_f64(),
-                    (received - last_received) as f64 / since.as_secs_f64(),
-                );
+                (self.events)(Event::Stats {
+                    sent_fps: (sent - last_sent) as f64 / since.as_secs_f64(),
+                    received_fps: (received - last_received) as f64 / since.as_secs_f64(),
+                });
                 (last_sent, last_received, last_report) = (sent, received, Instant::now());
             }
 
@@ -194,8 +200,6 @@ impl Session {
             }
         }
 
-        self.shutdown();
-        println!("Stopped.");
         Ok(())
     }
 
@@ -204,12 +208,20 @@ impl Session {
         self.spout_stop.store(true, Ordering::Relaxed);
         if let Some(t) = self.spout_thread.take() {
             match t.join() {
-                Ok(Err(e)) => eprintln!("[spout] {e}"),
-                Err(_) => eprintln!("[spout] thread crashed"),
+                Ok(Err(e)) => (self.events)(Event::Warning(format!("Spout output: {e}"))),
+                Err(_) => (self.events)(Event::Warning("Spout output thread crashed".into())),
                 Ok(Ok(())) => {}
             }
         }
         let _ = self.pipeline.set_state(gst::State::Null);
+    }
+}
+
+impl Drop for Session {
+    /// If a session is abandoned before `run` (e.g. "Cancel" while waiting for a code),
+    /// still stop the pipeline and remove the Spout source. Running this twice is harmless.
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 
@@ -219,6 +231,7 @@ fn attach_receiver(
     webrtc: &gst::Element,
     frame_tx: mpsc::SyncSender<Frame>,
     received: Arc<AtomicU64>,
+    events: EventSink,
 ) {
     let pipeline_weak = pipeline.downgrade(); // "weak" = doesn't keep the pipeline alive
     webrtc.connect_pad_added(move |_, pad| {
@@ -234,7 +247,7 @@ fn attach_receiver(
             true,
         ) {
             Ok(b) => b,
-            Err(e) => return eprintln!("[error] couldn't build decoder: {e}"),
+            Err(e) => return events(Event::Warning(format!("couldn't build decoder: {e}"))),
         };
         let appsink = bin
             .by_name("sink")
@@ -269,12 +282,12 @@ fn attach_receiver(
         );
 
         if pipeline.add(&bin).is_err() || bin.sync_state_with_parent().is_err() {
-            return eprintln!("[error] couldn't start decoder");
+            return events(Event::Warning("couldn't start decoder".into()));
         }
         let sink_pad = bin.static_pad("sink").expect("bin has a sink pad");
         match pad.link(&sink_pad) {
-            Ok(_) => println!("[video] partner's stream started"),
-            Err(e) => eprintln!("[error] couldn't connect incoming video: {e:?}"),
+            Ok(_) => events(Event::PartnerVideo),
+            Err(e) => events(Event::Warning(format!("couldn't connect incoming video: {e:?}"))),
         }
     });
 }
@@ -285,6 +298,7 @@ fn spawn_spout_thread(
     frame_rx: mpsc::Receiver<Frame>,
     partner: Arc<Mutex<String>>,
     stop: Arc<AtomicBool>,
+    events: EventSink,
 ) -> JoinHandle<Result<(), String>> {
     std::thread::spawn(move || {
         // (sender, unpacker) — created together, on the same GPU device.
@@ -300,7 +314,7 @@ fn spawn_spout_thread(
                 let name = format!("Collab - {}", partner.lock().unwrap());
                 let sender = SpoutSender::new(&name, f.w as u32, f.h as u32).map_err(|e| e.to_string())?;
                 let unpacker = Unpacker::new(sender.device(), f.w as u32, f.h as u32).map_err(|e| e.to_string())?;
-                println!("[spout] publishing \"{name}\" ({}×{}) — add it in OBS with Spout2 Capture", f.w, f.h);
+                events(Event::Publishing(name));
                 out = Some((sender, unpacker));
             }
             let (sender, unpacker) = out.as_mut().unwrap();

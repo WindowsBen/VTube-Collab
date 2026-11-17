@@ -18,6 +18,7 @@ use gstreamer_sdp as gst_sdp;
 use gstreamer_webrtc as gst_webrtc;
 
 use crate::code::Code;
+use crate::events::{ConnState, Event, EventSink};
 
 /// Public "what's my address?" server. Only sees IP addresses, never video.
 pub const STUN_SERVER: &str = "stun://stun.l.google.com:19302";
@@ -28,7 +29,7 @@ const GATHER_TIMEOUT: Duration = Duration::from_secs(8);
 pub type Error = Box<dyn std::error::Error>;
 
 /// Collects our network addresses ("ICE candidates") as webrtcbin discovers them.
-/// Call before creating the offer/answer, so none are missed.
+/// Attach before creating the offer/answer, so none are missed.
 pub struct Gatherer {
     candidates: Arc<Mutex<Vec<(u32, String)>>>,
     complete: mpsc::Receiver<()>,
@@ -51,10 +52,12 @@ impl Gatherer {
         });
 
         // Event: the gathering state changed; we care about "complete".
+        // A Mutex makes the sender shareable between threads (signals can fire on any thread).
+        let done_tx = Mutex::new(done_tx);
         webrtc.connect_notify(Some("ice-gathering-state"), move |webrtc, _| {
             let state = webrtc.property::<gst_webrtc::WebRTCICEGatheringState>("ice-gathering-state");
             if state == gst_webrtc::WebRTCICEGatheringState::Complete {
-                let _ = done_tx.send(());
+                let _ = done_tx.lock().unwrap().send(());
             }
         });
 
@@ -62,9 +65,9 @@ impl Gatherer {
     }
 
     /// Wait until gathering finishes (or times out), then build our code.
-    pub fn into_code(self, name: &str, local_sdp: String) -> Code {
+    pub fn into_code(self, name: &str, local_sdp: String, events: &EventSink) -> Code {
         if self.complete.recv_timeout(GATHER_TIMEOUT).is_err() {
-            eprintln!("(address gathering is slow; continuing with what was found)");
+            events(Event::Info("Address gathering is slow; continuing with what was found.".into()));
         }
         let candidates = self.candidates.lock().unwrap().clone();
         Code { name: name.to_string(), sdp: local_sdp, candidates }
@@ -118,36 +121,30 @@ pub fn apply_remote(webrtc: &gst::Element, kind: gst_webrtc::WebRTCSDPType, code
     Ok(())
 }
 
-/// Print connection state changes (checking → connected, or failed).
-pub fn log_connection_state(webrtc: &gst::Element) {
-    webrtc.connect_notify(Some("ice-connection-state"), |webrtc, _| {
-        let state = webrtc.property::<gst_webrtc::WebRTCICEConnectionState>("ice-connection-state");
-        let text = match state {
-            gst_webrtc::WebRTCICEConnectionState::Checking => "connecting...",
-            gst_webrtc::WebRTCICEConnectionState::Connected => "CONNECTED",
-            gst_webrtc::WebRTCICEConnectionState::Completed => "connected (best route found)",
-            gst_webrtc::WebRTCICEConnectionState::Failed => {
-                "FAILED — no direct route found (strict network/firewall?)"
-            }
-            gst_webrtc::WebRTCICEConnectionState::Disconnected => "disconnected",
-            gst_webrtc::WebRTCICEConnectionState::Closed => "closed",
+/// Report connection state changes (connecting → connected, or failed).
+pub fn report_connection_state(webrtc: &gst::Element, events: EventSink) {
+    webrtc.connect_notify(Some("ice-connection-state"), move |webrtc, _| {
+        use gst_webrtc::WebRTCICEConnectionState as S;
+        let state = match webrtc.property::<S>("ice-connection-state") {
+            S::Checking => ConnState::Connecting,
+            S::Connected | S::Completed => ConnState::Connected,
+            S::Failed => ConnState::Failed,
+            S::Disconnected => ConnState::Disconnected,
+            S::Closed => ConnState::Closed,
             _ => return,
         };
-        println!("[connection] {text}");
+        events(Event::Connection(state));
     });
 }
 
 /// Watch the pipeline's message bus for errors on a background thread.
-pub fn watch_bus(pipeline: &gst::Pipeline) {
+pub fn watch_bus(pipeline: &gst::Pipeline, events: EventSink) {
     let bus = pipeline.bus().expect("pipelines always have a bus");
     std::thread::spawn(move || {
         for msg in bus.iter_timed(gst::ClockTime::NONE) {
             match msg.view() {
                 gst::MessageView::Error(e) => {
-                    eprintln!("[error] {} ({:?})", e.error(), e.debug());
-                }
-                gst::MessageView::Warning(w) => {
-                    eprintln!("[warning] {}", w.error());
+                    events(Event::Warning(format!("{} ({:?})", e.error(), e.debug())));
                 }
                 gst::MessageView::Eos(_) => break,
                 _ => {}
