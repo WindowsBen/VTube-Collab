@@ -1031,17 +1031,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "encode-test"
-version = "0.1.0"
-dependencies = [
- "gstreamer",
- "gstreamer-app",
- "gstreamer-video",
- "image",
- "vtc-core",
-]
-
-[[package]]
 name = "endi"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

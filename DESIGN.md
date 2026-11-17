@@ -149,7 +149,8 @@ Progress:
   (codes with Copy buttons) → Collab (status dot, OBS source name, fps). Connection runs on a worker thread.
 - ✅ `collab` split into a library (`Connection` API + events) and the CLI; new `collab list`.
 - ✅ Bundle includes the app + `Start VTube Collab.bat` (17.9 MB zip).
-- ✅ Short room codes (e.g. `MINTY-OTTER-42`) via the handshake server in `handshake/`:
+- ✅ Short room codes (e.g. `MINTY-OTTER-42`) via the handshake server in `handshake/` (this first "v1"
+  mailbox design was later replaced by v2 rooms and removed — kept here as history):
   Cloudflare Worker + SQLite Durable Object per room, deployed 2026-11-17 to
   **https://vtube-collab.mpavatars-relay.workers.dev** (owner's existing account, **Workers Free plan**:
   over the shared 100k requests/day the server just errors until 00:00 UTC — never add a payment method or
@@ -189,8 +190,12 @@ Progress:
   2 people in a v2 room: ~57–60 fps. Needs a real multi-PC test; receive path CPU per partner will matter for
   big rooms (→ zero-copy decode/unpack on the GPU).
 
-Code layout: `vtc-core/` (shared: Spout capture/output, packing, GPU, compositor), `collab/` (connection engine +
-CLI), `app/` (window), `handshake/` (Cloudflare server), `spout-probe/` and `encode-test/` (test tools).
+- Clean-up (2026-11-17): removed `encode-test/` (early CPU loopback tool), `vtc-core/src/packing.rs` (CPU
+  packing, replaced by the GPU shaders), the CPU upload in the Spout sender, and **room server v1** (one-time
+  mailbox; deleted with migration `v3`). Old test bundles from before rooms v2 now fall back to long codes.
+
+Code layout: `vtc-core/` (shared: Spout capture/output, GPU pack/unpack, compositor), `collab/` (connection
+engine + CLI), `app/` (window), `handshake/` (Cloudflare room server), `spout-probe/` (test tool: list/grab/watch).
 
 ### Setup steps (in order)
 1. ✅ Write this design document

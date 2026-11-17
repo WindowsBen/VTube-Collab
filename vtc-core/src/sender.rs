@@ -73,11 +73,11 @@ impl Drop for MutexGuard<'_> {
 /// Our own Spout2 sender.
 pub struct SpoutSender {
     name: String,
-    width: u32,
-    height: u32,
     device: ID3D11Device,
     context: ID3D11DeviceContext,
-    texture: ID3D11Texture2D,
+    /// The shared texture itself. Not read directly (drawing goes through `target`),
+    /// but kept here so it lives exactly as long as the sender.
+    _texture: ID3D11Texture2D,
     /// Lets the GPU draw directly into our shared texture (used by gpu::Unpacker).
     target: ID3D11RenderTargetView,
     access_lock: NamedMutex,
@@ -155,35 +155,14 @@ impl SpoutSender {
 
         Ok(SpoutSender {
             name: name.to_string(),
-            width,
-            height,
             device,
             context,
-            texture,
+            _texture: texture,
             target,
             access_lock,
             _info_mem: info_mem,
             _info_lock: info_lock,
         })
-    }
-
-    /// Copy one RGBA frame (width × height × 4 bytes, no padding) into the shared texture.
-    pub fn send(&mut self, rgba: &[u8]) -> Result<()> {
-        let row_bytes = self.width * 4;
-        if rgba.len() < (row_bytes * self.height) as usize {
-            return Err(windows::core::Error::new(E_FAIL, "frame is smaller than the sender"));
-        }
-        // If a receiver holds the lock for more than ~1 frame, skip this frame.
-        let Some(_guard) = self.access_lock.lock(16) else {
-            return Ok(());
-        };
-        unsafe {
-            self.context
-                .UpdateSubresource(&self.texture, 0, None, rgba.as_ptr() as *const _, row_bytes, 0);
-            // Make sure the GPU has the new pixels before we release the lock.
-            self.context.Flush();
-        }
-        Ok(())
     }
 }
 
