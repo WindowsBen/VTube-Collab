@@ -213,7 +213,7 @@ Progress:
     bottom-aligned); resizing the avatar mid-session reopens the packer instead of erroring.
   - Encoder paths verified at 60 fps with a correct picture: NVIDIA, AMD (`amfh264enc`), Windows
     (`mfh264enc`); AMD-style decoder via test-only `VTC_DECODER`. Intel Quick Sync not testable here.
-  - Tester guide `docs/BETA-TESTING.md` (bundled as BETA-TESTING.txt); zip named `VTubeCollab-<version>.zip`.
+  - One short readme + tester guide `docs/README.txt` (bundled as README.txt); zip named `VTubeCollab-<version>.zip`.
 
 Code layout: `vtc-core/` (shared: Spout capture/output, GPU pack/unpack, compositor), `collab/` (connection
 engine + CLI), `app/` (window), `handshake/` (Cloudflare room server), `spout-probe/` (test tool: list/grab/watch).

@@ -7,14 +7,13 @@
 # Layout (GStreamer finds its plugins relative to its own DLLs, so this must be kept):
 #   VTubeCollab\
 #     Start VTube Collab.bat    double-click to open the app window
-#     BETA-TESTING.txt          tester guide (from docs\BETA-TESTING.md)
 #     bin\VTubeCollab.exe       the app window
 #     bin\collab.exe            command-line tool (for testing)
 #     bin\                      + GStreamer core DLLs + Microsoft C++ runtime DLLs
 #     lib\gstreamer-1.0\        only the plugins collab uses
 #     libexec\gstreamer-1.0\    gst-plugin-scanner.exe (GStreamer's plugin checker)
 #     licenses\                 GStreamer's licence texts (required by the LGPL)
-#     README.txt
+#     README.txt                setup + tester guide (from docs\README.txt)
 
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path "$PSScriptRoot\..").Path
@@ -103,40 +102,7 @@ Copy-Item "$($crt.FullName)\*.dll" "$bundle\bin\"
 
 # ---- Licences and readme ----
 Copy-Item "$gst\share\licenses\*" "$bundle\licenses\" -Recurse
-@"
-VTube Collab $version
-$('=' * (13 + $version.Length))
-
-Requirements: Windows 10/11, the OBS Spout2 plugin, a VTubing app with Spout2 output turned on.
-Nothing else to install. Testers: please read BETA-TESTING.txt.
-
-1. Turn on Spout2 output in your VTubing app.
-2. Double-click "Start VTube Collab.bat".
-3. Enter your name and pick your avatar from the list.
-4. The host clicks "Host a collab...", chooses the room settings, clicks "Open room"
-   and shares the room code (e.g. MINTY-OTTER-42). Everyone else clicks "Join a collab...",
-   types the code, and waits for the host to click Accept.
-5. In OBS, add a Spout2 Capture source for each person: "Collab - <their name>".
-   Want everyone in one source instead? Tick "Publish a group source" in the app and
-   pick "Collab - Group" (off by default to save resources).
-
-Help > How to use... opens these steps in a separate window you can keep open.
-
-Allow VTube Collab through Windows Firewall when asked. Windows may show "Windows protected
-your PC" (the app isn't signed yet): click "More info" > "Run anyway".
-
-Problems? In the app: File > Open log folder, and send the newest .log file.
-
-Command-line version (for testing), in the 'bin' folder:
-    collab.exe list
-    collab.exe host "Avatar Live" --name Ben [--group]
-    collab.exe join "Warudo Camera 1" --name Beat [--group]
-
-Includes GStreamer (LGPL) and Microsoft C++ runtime libraries; licences in the 'licenses' folder.
-"@ | Set-Content "$bundle\README.txt" -Encoding UTF8
-
-# Tester guide (Markdown is readable as plain text).
-Copy-Item "$root\docs\BETA-TESTING.md" "$bundle\BETA-TESTING.txt"
+(Get-Content "$root\docs\README.txt" -Raw).Replace('{VERSION}', $version) | Set-Content "$bundle\README.txt" -Encoding UTF8 -NoNewline
 
 # Double-click starter next to the readme (the .exe must stay in bin\ with its DLLs).
 "@echo off`r`nstart `"`" `"%~dp0bin\VTubeCollab.exe`"`r`n" | Set-Content "$bundle\Start VTube Collab.bat" -Encoding ASCII -NoNewline
