@@ -18,6 +18,7 @@ PLEASE TRY
 
 SOMETHING WRONG?
 Tell us what happened, who looked bad to whom, and roughly when.
+Also your upload speed (run a test at speedtest.net). Big rooms need about 25 Mbit/s upload.
 Send your log: File > Open log folder > newest .log file.
 Stuttering? The host can set a bigger receive buffer (200-300 ms) next time.
 
