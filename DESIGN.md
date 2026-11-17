@@ -202,6 +202,18 @@ Progress:
 - Clean-up (2026-11-17): removed `encode-test/` (early CPU loopback tool), `vtc-core/src/packing.rs` (CPU
   packing, replaced by the GPU shaders), the CPU upload in the Spout sender, and **room server v1** (one-time
   mailbox; deleted with migration `v3`). Old test bundles from before rooms v2 now fall back to long codes.
+- ✅ **Beta 0.2.0** (2026-11-17), for an 8-person test group:
+  - Log file per run in `%LOCALAPPDATA%\VTubeCollab\logs\` (newest 10 kept): version, Windows, graphics
+    cards, Spout sources, all events and stats, crashes with backtrace. Never the long codes.
+    App: File → Open log folder.
+  - Remembers name, avatar, room settings and the group-source switch (`%APPDATA%\VTubeCollab\settings.json`).
+  - Video size per person by room size: up to 4 → 1920×1080, 5–8 → 1280×720, more → 960×540 (bitrate
+    ranges scaled to match). Joiners switch to the host's size on Welcome.
+  - Any avatar size/aspect: GPU shader scales it into the transmit size (bilinear, premultiplied, centred,
+    bottom-aligned); resizing the avatar mid-session reopens the packer instead of erroring.
+  - Encoder paths verified at 60 fps with a correct picture: NVIDIA, AMD (`amfh264enc`), Windows
+    (`mfh264enc`); AMD-style decoder via test-only `VTC_DECODER`. Intel Quick Sync not testable here.
+  - Tester guide `docs/BETA-TESTING.md` (bundled as BETA-TESTING.txt); zip named `VTubeCollab-<version>.zip`.
 
 Code layout: `vtc-core/` (shared: Spout capture/output, GPU pack/unpack, compositor), `collab/` (connection
 engine + CLI), `app/` (window), `handshake/` (Cloudflare room server), `spout-probe/` (test tool: list/grab/watch).

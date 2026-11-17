@@ -7,6 +7,7 @@
 // Release builds open without a black console window behind the app.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod prefs;
 mod preview;
 mod theme;
 mod worker;
@@ -28,6 +29,7 @@ const MAX_WINDOW_HEIGHT: f32 = 860.0;
 const MARGIN: f32 = 10.0;
 
 fn main() -> eframe::Result {
+    collab::log::start("app");
     collab::quiet_gstreamer_log();
     let icon = app_icon();
     let options = eframe::NativeOptions {
@@ -135,15 +137,22 @@ pub struct App {
     requested_height: f32,
     /// Preview mode (screenshots only): no background refresh of the source list.
     pub preview: bool,
+    /// Room settings last used to open a room (remembered for next time).
+    last_room_settings: RoomSettings,
+    /// The choices as last saved to disk (to save only when something changed).
+    saved: prefs::Prefs,
 }
 
 impl App {
     fn new(ctx: &egui::Context) -> App {
         theme::apply(ctx);
         let sources = collab::avatar_sources();
+        let saved = prefs::load();
+        // Last time's avatar if it's running now, otherwise the first one found.
+        let source = saved.source.clone().filter(|s| sources.contains(s)).or_else(|| sources.first().cloned());
         let mut app = App {
-            name: String::new(),
-            source: sources.first().cloned(),
+            name: saved.name.clone(),
+            source,
             sources,
             last_refresh: Instant::now(),
             screen: Screen::Setup,
@@ -164,6 +173,8 @@ impl App {
             icon: Arc::new(app_icon()),
             requested_height: 0.0,
             preview: false,
+            last_room_settings: saved.room_settings,
+            saved,
         };
         // TEST ONLY: VTC_PREVIEW=room (etc.) shows a screen with sample data, for screenshots.
         if let Ok(which) = std::env::var("VTC_PREVIEW") {
@@ -259,6 +270,8 @@ impl App {
                     self.status = format!("Reply code ready. Send it back to {partner}.");
                 }
                 FromWorker::Group(layers, enabled) => {
+                    // Start the group source the way it was last time.
+                    enabled.store(self.saved.group_enabled, std::sync::atomic::Ordering::Relaxed);
                     self.group_layers = Some(layers);
                     self.group_enabled = Some(enabled);
                 }
@@ -425,7 +438,7 @@ impl App {
             }
             if xp::button(ui, "Host a collab...", ready, true).clicked() {
                 self.setup_error = None;
-                self.screen = Screen::HostSettings { settings: RoomSettings::default() };
+                self.screen = Screen::HostSettings { settings: self.last_room_settings };
                 self.status = "Choose the room settings.".into();
             }
         });
@@ -447,10 +460,13 @@ impl App {
                 ui.end_row();
             });
             ui.add_space(4.0);
+            let (w, h) = collab::transmit_size_for(settings.max_people);
+            ui.label(format!("Video size per person: {w}×{h}"));
             xp::hint(
                 ui,
                 "Max people counts you too. Everyone sends their avatar to everyone, so bigger rooms \
-                 need more upload speed (quality is lowered automatically to compensate).",
+                 use smaller video (1080p up to 4 people, 720p up to 8, 540p above) to keep \
+                 upload and graphics card load manageable.",
             );
             xp::hint(
                 ui,
@@ -476,6 +492,8 @@ impl App {
         } else if open {
             let Screen::HostSettings { settings } = &self.screen else { return };
             let settings = *settings;
+            collab::log::info(&format!("Hosting as {:?} with avatar {:?}, {settings:?}", self.name.trim(), self.source));
+            self.last_room_settings = settings;
             self.clear_collab_info();
             self.worker = Some(Worker::host(self.source.clone().unwrap(), self.name.trim().into(), settings, ui.ctx().clone()));
             self.screen = Screen::Room { code: None, host: true, long_codes: false };
@@ -526,6 +544,8 @@ impl App {
         if let Some(text) = start {
             // Check the format here, so typos are reported instantly.
             if collab::code::decode(&text).is_ok() || collab::rooms::normalise(&text).is_some() {
+                let what = collab::rooms::normalise(&text).unwrap_or_else(|| "a long invite code".into());
+                collab::log::info(&format!("Joining {what} as {:?} with avatar {:?}", self.name.trim(), self.source));
                 *error = None;
                 *phase = JoinPhase::Joining;
                 self.clear_collab_info();
@@ -613,7 +633,11 @@ impl App {
                     };
                     xp::hint(ui, &hint);
                     if let Some(s) = &self.room_settings {
-                        xp::hint(ui, &format!("Up to {} people · {} ms receive buffer", s.max_people, s.buffer_ms));
+                        let (w, h) = collab::transmit_size_for(s.max_people);
+                        xp::hint(
+                            ui,
+                            &format!("Up to {} people · {w}×{h} video · {} ms receive buffer", s.max_people, s.buffer_ms),
+                        );
                     }
                 }
             });
@@ -811,6 +835,12 @@ impl App {
                         ui.spacing_mut().item_spacing.y = 0.0;
                         match menu {
                             Menu::File => {
+                                if xp::menu_item(ui, "Open log folder").clicked() {
+                                    // Explorer opens the folder; testers zip the newest log and send it.
+                                    let _ = std::process::Command::new("explorer").arg(collab::log::folder()).spawn();
+                                    self.open_menu = None;
+                                }
+                                xp::menu_separator(ui);
                                 if xp::menu_item(ui, "Exit").clicked() {
                                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                                 }
@@ -900,6 +930,26 @@ impl App {
             }
         }
         self.dialogs.retain(|(d, _)| !closed.contains(d));
+    }
+
+    /// Save the remembered choices if any of them changed (not in preview mode).
+    fn save_prefs_if_changed(&mut self) {
+        if self.preview {
+            return;
+        }
+        let now = prefs::Prefs {
+            name: self.name.trim().to_string(),
+            source: self.source.clone(),
+            room_settings: self.last_room_settings,
+            group_enabled: match &self.group_enabled {
+                Some(flag) => flag.load(std::sync::atomic::Ordering::Relaxed),
+                None => self.saved.group_enabled, // not in a room: keep last time's choice
+            },
+        };
+        if now != self.saved {
+            prefs::save(&now);
+            self.saved = now;
+        }
     }
 
     fn status_right(&self) -> Option<String> {
@@ -1049,6 +1099,7 @@ impl eframe::App for App {
         xp::status_bar(ui, status_rect, &self.status, right.as_deref());
         self.menu_bar(ui, menu_rect);
         self.dialog_windows(ui.ctx());
+        self.save_prefs_if_changed();
 
         // Fit the window to its contents (Windows does this for XP dialogs, too).
         let chrome = window.height() - content.height();

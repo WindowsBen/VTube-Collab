@@ -1,6 +1,6 @@
 [package]
 name = "collab"
-version = "0.1.0"
+version = "0.2.0-beta"
 edition = "2024"
 
 [dependencies]
@@ -15,4 +15,4 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
 ureq = "3.5.2"
-vtc-core = { version = "0.1.0", path = "../vtc-core" }
+vtc-core = { path = "../vtc-core" }

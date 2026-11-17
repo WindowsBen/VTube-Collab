@@ -113,6 +113,7 @@ impl Worker {
             let deliver = {
                 let (outbox, egui_ctx) = (outbox.clone(), egui_ctx.clone());
                 move |msg: FromWorker| {
+                    log_message(&msg);
                     let _ = outbox.lock().unwrap().send(msg);
                     egui_ctx.request_repaint();
                 }
@@ -137,6 +138,25 @@ impl Worker {
     }
 }
 
+/// Write what the collab reports to the log file (never the long codes themselves:
+/// they contain network addresses).
+fn log_message(msg: &FromWorker) {
+    use collab::log;
+    match msg {
+        FromWorker::Event(e) => log::event(e),
+        FromWorker::Room(e) => log::info(&format!("Room: {e:?}")),
+        FromWorker::RoomCode(code) => log::info(&format!("Room opened: {code}")),
+        FromWorker::RoomUnavailable(why) => log::warning(&format!("Room codes unavailable: {why}")),
+        FromWorker::Invite(_) => log::info("Long invite code ready"),
+        FromWorker::ReplyRejected(why) => log::warning(&format!("Reply code rejected: {why}")),
+        FromWorker::Accepted(partner) => log::info(&format!("Long-code partner accepted: {partner}")),
+        FromWorker::Reply { partner, .. } => log::info(&format!("Long reply code ready for {partner}")),
+        FromWorker::Group(..) => {}
+        FromWorker::Ended(Some(e)) => log::error(&format!("Collab ended with an error: {e}")),
+        FromWorker::Ended(None) => log::info("Collab ended"),
+    }
+}
+
 /// Pass the window's Accept/Decline clicks on to the room.
 fn forward_commands(inbox: Receiver<ToWorker>) -> Receiver<RoomCommand> {
     let (tx, rx) = mpsc::channel();
@@ -144,8 +164,14 @@ fn forward_commands(inbox: Receiver<ToWorker>) -> Receiver<RoomCommand> {
         // Ends when the window's side of the channel is dropped (collab over).
         for msg in inbox {
             let cmd = match msg {
-                ToWorker::Approve(id) => RoomCommand::Approve(id),
-                ToWorker::Decline(id) => RoomCommand::Decline(id),
+                ToWorker::Approve(id) => {
+                    collab::log::info(&format!("Host accepted {id}"));
+                    RoomCommand::Approve(id)
+                }
+                ToWorker::Decline(id) => {
+                    collab::log::info(&format!("Host declined {id}"));
+                    RoomCommand::Decline(id)
+                }
                 ToWorker::Reply(_) => continue,
             };
             if tx.send(cmd).is_err() {

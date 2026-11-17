@@ -13,11 +13,18 @@
 // Packed frame layout (twice as wide as the avatar):
 //   left half  = avatar colours (fully transparent pixels made black)
 //   right half = avatar alpha as brightness (black = see-through, white = solid)
+//
+// The avatar is sent at a fixed "transmit size" (e.g. 1280×720 in bigger rooms).
+// When packing, the source image is scaled to fit inside it — so any source size
+// works, and the source may even change size mid-collab without anything restarting.
 
 cbuffer Params : register(b0)
 {
-    uint avatarWidth; // width of the avatar image (half the packed width)
-    uint3 padding;    // constant buffers come in 16-byte blocks
+    uint avatarWidth;  // transmit width (half the packed width)
+    uint avatarHeight; // transmit height
+    uint srcWidth;     // the VTubing app's image size (pack only)
+    uint srcHeight;
+    float4 fit;        // where the source lands in the transmit frame: x, y, width, height (pixels)
 };
 
 // ---- Vertex shader: makes one triangle that covers the whole output ----
@@ -36,10 +43,34 @@ static const float3 TO_CR = float3( 0.5,    -0.4542, -0.0458);
 
 Texture2D<float4> avatar : register(t0); // the avatar's Spout texture (RGBA)
 
+// The avatar at transmit pixel `p` (colour + alpha), scaled from the source image.
+// Blends the 4 nearest source pixels ("bilinear"), weighting colours by their alpha
+// ("premultiplied") so see-through pixels don't darken the avatar's edges.
+float4 avatarAt(int2 p)
+{
+    float2 local = (float2(p) + 0.5 - fit.xy) / fit.zw;   // 0..1 inside the fitted area
+    if (any(local < 0.0) || any(local > 1.0))
+        return float4(0, 0, 0, 0);                          // outside: see-through
+    float2 s = local * float2(srcWidth, srcHeight) - 0.5;  // position in source pixels
+    int2 i0 = int2(floor(s));
+    float2 f = s - floor(s);
+    int2 last = int2(srcWidth, srcHeight) - 1;
+    float4 acc = float4(0, 0, 0, 0);
+    [unroll] for (int dy = 0; dy < 2; dy++)
+    {
+        [unroll] for (int dx = 0; dx < 2; dx++)
+        {
+            float4 c = avatar.Load(int3(clamp(i0 + int2(dx, dy), int2(0, 0), last), 0));
+            float w = (dx ? f.x : 1.0 - f.x) * (dy ? f.y : 1.0 - f.y);
+            acc += w * float4(c.rgb * c.a, c.a);
+        }
+    }
+    return acc.a > 0.0 ? float4(acc.rgb / acc.a, acc.a) : float4(0, 0, 0, 0);
+}
+
 float3 colourAt(int2 p)
 {
-    float4 c = avatar.Load(int3(p, 0));
-    return c.a > 0.0 ? c.rgb : float3(0, 0, 0); // see-through → black
+    return avatarAt(p).rgb; // see-through pixels come back black already
 }
 
 // Writes the Y plane of the packed frame (packed width × height).
@@ -48,7 +79,7 @@ float PSPackLuma(float4 pos : SV_Position) : SV_Target
     int2 p = int2(pos.xy);
     if (p.x < (int)avatarWidth)
         return (16.0 + 219.0 * dot(colourAt(p), TO_Y)) / 255.0;          // colour half
-    float a = avatar.Load(int3(p.x - (int)avatarWidth, p.y, 0)).a;
+    float a = avatarAt(int2(p.x - (int)avatarWidth, p.y)).a;
     return (16.0 + 219.0 * a) / 255.0;                                    // alpha half
 }
 

@@ -35,9 +35,9 @@ pub struct Connection {
 impl Connection {
     /// Start hosting: opens the avatar, starts the pipeline, returns the invite code.
     pub fn host(sender_name: &str, my_name: &str, events: EventSink) -> Result<(Connection, String), Error> {
-        let packer = open_avatar(sender_name)?;
+        let packer = open_avatar(sender_name, TWO_PERSON)?;
         gst::init()?;
-        let mut session = Session::start(packer.width as usize, packer.height as usize, events.clone())?;
+        let mut session = Session::start(TWO_PERSON, events.clone())?;
         session.add_partner(PARTNER, "partner", Role::Offerer)?;
 
         events(Event::Info("Preparing invite code (finding your network addresses)...".into()));
@@ -69,9 +69,9 @@ impl Connection {
     ) -> Result<(Connection, String, String), Error> {
         // Check the code first, so a bad paste fails fast before anything starts.
         let invite = code::decode(invite_text)?;
-        let packer = open_avatar(sender_name)?;
+        let packer = open_avatar(sender_name, TWO_PERSON)?;
         gst::init()?;
-        let mut session = Session::start(packer.width as usize, packer.height as usize, events.clone())?;
+        let mut session = Session::start(TWO_PERSON, events.clone())?;
         session.add_partner(PARTNER, &invite.name, Role::Answerer)?;
 
         let webrtc = session.partner_webrtc(PARTNER).expect("just added");
@@ -102,10 +102,14 @@ impl Connection {
     }
 }
 
-/// Open our avatar's Spout2 sender for GPU packing, with a helpful message if it isn't running.
-pub(crate) fn open_avatar(sender_name: &str) -> Result<Packer, Error> {
+/// Open our avatar's Spout2 sender for GPU packing at `transmit` size, with a helpful
+/// message if it isn't running.
+pub(crate) fn open_avatar(sender_name: &str, transmit: (u32, u32)) -> Result<Packer, Error> {
     let info = spout::read_sender_info(sender_name).ok_or_else(|| {
         format!("No Spout2 source called \"{sender_name}\". Is your VTubing app running with Spout2 output on?")
     })?;
-    Ok(Packer::open(&info)?)
+    Ok(Packer::open(&info, transmit)?)
 }
+
+/// Two-person (long-code) collabs always send full 1080p.
+const TWO_PERSON: (u32, u32) = (1920, 1080);

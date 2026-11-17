@@ -26,7 +26,11 @@ const USAGE: &str = "Usage:\n  collab list\n  collab host \"<Spout source>\" [--
 type Error = Box<dyn std::error::Error>;
 
 fn main() {
+    collab::log::start("cli");
     collab::quiet_gstreamer_log();
+    if let Some(path) = collab::log::path() {
+        println!("Log file: {}", path.display());
+    }
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mode = args.first().map(String::as_str);
@@ -55,6 +59,7 @@ fn main() {
         _ => Err(USAGE.into()),
     };
     if let Err(e) = result {
+        collab::log::error(&e.to_string());
         eprintln!("Error: {e}");
         std::process::exit(1);
     }
@@ -75,7 +80,14 @@ fn list() -> Result<(), Error> {
 
 /// Turns connection events into printed lines.
 fn print_events() -> EventSink {
-    Arc::new(|event| match event {
+    Arc::new(|event| {
+        collab::log::event(&event);
+        print_event(event)
+    })
+}
+
+fn print_event(event: Event) {
+    match event {
         Event::Info(text) => println!("{text}"),
         Event::Connection { peer, state } => println!(
             "[connection {peer}] {}",
@@ -104,13 +116,20 @@ fn print_events() -> EventSink {
             println!("[stats] sent {sent_fps:.1} fps | received: {}", if from.is_empty() { "-".into() } else { from.join(", ") });
         }
         Event::Warning(text) => eprintln!("[warning] {text}"),
-    })
+    }
 }
 
 /// Turns room events into printed lines; the host lets everyone in automatically.
 fn print_room_events(approve: Option<mpsc::Sender<RoomCommand>>) -> Arc<dyn Fn(RoomEvent) + Send + Sync> {
     let approve = Mutex::new(approve);
-    Arc::new(move |event| match event {
+    Arc::new(move |event| {
+        collab::log::info(&format!("Room: {event:?}"));
+        print_room_event(event, &approve)
+    })
+}
+
+fn print_room_event(event: RoomEvent, approve: &Mutex<Option<mpsc::Sender<RoomCommand>>>) {
+    match event {
         RoomEvent::Waiting => println!("[room] waiting for the host to let you in..."),
         RoomEvent::Admitted { host, settings } => println!(
             "[room] you're in{} — up to {} people, {} ms buffer",
@@ -129,7 +148,7 @@ fn print_room_events(approve: Option<mpsc::Sender<RoomCommand>>) -> Arc<dyn Fn(R
         RoomEvent::MemberLeft { name, .. } => println!("[room] {name} left"),
         RoomEvent::BecameHost => println!("[room] the host left — you're the host now"),
         RoomEvent::ServerLost => eprintln!("[room] lost the room server; nobody new can join"),
-    })
+    }
 }
 
 fn host_room(sender: &str, name: &str, settings: RoomSettings) -> Result<(), Error> {

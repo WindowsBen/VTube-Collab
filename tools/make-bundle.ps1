@@ -2,11 +2,12 @@
 #
 #   powershell -ExecutionPolicy Bypass -File tools\make-bundle.ps1
 #
-# Output: dist\VTubeCollab\  and  dist\VTubeCollab-test.zip
+# Output: dist\VTubeCollab\  and  dist\VTubeCollab-<version>.zip  (version from app\Cargo.toml)
 #
 # Layout (GStreamer finds its plugins relative to its own DLLs, so this must be kept):
 #   VTubeCollab\
 #     Start VTube Collab.bat    double-click to open the app window
+#     BETA-TESTING.txt          tester guide (from docs\BETA-TESTING.md)
 #     bin\VTubeCollab.exe       the app window
 #     bin\collab.exe            command-line tool (for testing)
 #     bin\                      + GStreamer core DLLs + Microsoft C++ runtime DLLs
@@ -19,7 +20,8 @@ $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path "$PSScriptRoot\..").Path
 $dist = Join-Path $root 'dist'
 $bundle = Join-Path $dist 'VTubeCollab'
-$zip = Join-Path $dist 'VTubeCollab-test.zip'
+$version = (Select-String -Path "$root\app\Cargo.toml" -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+$zip = Join-Path $dist "VTubeCollab-$version.zip"
 
 # ---- Where things are on the developer's PC ----
 $gst = $env:GSTREAMER_1_0_ROOT_MSVC_X86_64
@@ -102,13 +104,11 @@ Copy-Item "$($crt.FullName)\*.dll" "$bundle\bin\"
 # ---- Licences and readme ----
 Copy-Item "$gst\share\licenses\*" "$bundle\licenses\" -Recurse
 @"
-VTube Collab - test build
-=========================
+VTube Collab $version
+$('=' * (13 + $version.Length))
 
 Requirements: Windows 10/11, the OBS Spout2 plugin, a VTubing app with Spout2 output turned on.
-Nothing else to install.
-
-Before unzipping: right-click the zip > Properties > tick "Unblock" > OK.
+Nothing else to install. Testers: please read BETA-TESTING.txt.
 
 1. Turn on Spout2 output in your VTubing app.
 2. Double-click "Start VTube Collab.bat".
@@ -122,8 +122,10 @@ Before unzipping: right-click the zip > Properties > tick "Unblock" > OK.
 
 Help > How to use... opens these steps in a separate window you can keep open.
 
-Allow VTube Collab through Windows Firewall when asked. Windows may warn that the app
-is unrecognised (it isn't signed yet): click "More info" > "Run anyway".
+Allow VTube Collab through Windows Firewall when asked. Windows may show "Windows protected
+your PC" (the app isn't signed yet): click "More info" > "Run anyway".
+
+Problems? In the app: File > Open log folder, and send the newest .log file.
 
 Command-line version (for testing), in the 'bin' folder:
     collab.exe list
@@ -132,6 +134,9 @@ Command-line version (for testing), in the 'bin' folder:
 
 Includes GStreamer (LGPL) and Microsoft C++ runtime libraries; licences in the 'licenses' folder.
 "@ | Set-Content "$bundle\README.txt" -Encoding UTF8
+
+# Tester guide (Markdown is readable as plain text).
+Copy-Item "$root\docs\BETA-TESTING.md" "$bundle\BETA-TESTING.txt"
 
 # Double-click starter next to the readme (the .exe must stay in bin\ with its DLLs).
 "@echo off`r`nstart `"`" `"%~dp0bin\VTubeCollab.exe`"`r`n" | Set-Content "$bundle\Start VTube Collab.bat" -Encoding ASCII -NoNewline

@@ -32,12 +32,28 @@ use crate::group::{self, GroupLayer, GroupLayers};
 use crate::peer::{self, Error};
 
 pub const FPS: u64 = 60;
-/// Starting bitrate, and the most any one stream gets.
-const MAX_STREAM_KBPS: u32 = 8000;
 /// Total upload we aim to stay under: the per-partner bitrate shrinks as the room grows.
 const UPLOAD_BUDGET_KBPS: u32 = 24_000;
-/// ...but never below this (it starts looking blocky).
-const MIN_STREAM_KBPS: u32 = 2500;
+
+/// The size each avatar is sent at, from the room's "max people" setting. Bigger
+/// rooms send smaller video: every person decodes everyone else's stream, so 7
+/// streams at 1080p would overload many PCs (720p is 2.25× less work, 540p 4×).
+pub fn transmit_size_for(max_people: u32) -> (u32, u32) {
+    match max_people {
+        0..=4 => (1920, 1080),
+        5..=8 => (1280, 720),
+        _ => (960, 540),
+    }
+}
+
+/// Bitrate range (min, max kbps) for one stream at this transmit size.
+fn bitrate_range(transmit: (u32, u32)) -> (u32, u32) {
+    match transmit.1 {
+        1000.. => (2500, 8000), // 1080p
+        700.. => (1800, 4500),  // 720p
+        _ => (1200, 2800),      // 540p
+    }
+}
 
 /// How long incoming video is held before showing it, so packets that arrive late or
 /// get resent after being lost can still be used. More = smoother on bad connections,
@@ -106,20 +122,27 @@ pub struct Session {
     closing: bool,
     /// Receive buffer for incoming video, in milliseconds.
     buffer_ms: u32,
+    /// The size our avatar is sent at (see `transmit_size_for`).
+    transmit: (u32, u32),
+}
+
+/// Memory layout of the packed NV12 frames we send for a `transmit`-sized avatar:
+/// twice as wide (colour + alpha), BT.709 limited range — what the GPU pack shader makes.
+fn packed_video_info(transmit: (u32, u32)) -> Result<gst_video::VideoInfo, Error> {
+    Ok(gst_video::VideoInfo::builder(gst_video::VideoFormat::Nv12, transmit.0 * 2, transmit.1)
+        .fps(gst::Fraction::new(FPS as i32, 1))
+        .colorimetry(&"bt709".parse()?)
+        .build()?)
 }
 
 impl Session {
-    /// Build the sending pipeline for a `w`×`h` avatar and start it (no partners yet).
-    pub fn start(w: usize, h: usize, events: EventSink) -> Result<Session, Error> {
-        let enc = encoder::pick(MAX_STREAM_KBPS, FPS)?;
+    /// Build the sending pipeline for avatars sent at `transmit` size, and start it
+    /// (no partners yet).
+    pub fn start(transmit: (u32, u32), events: EventSink) -> Result<Session, Error> {
+        let enc = encoder::pick(bitrate_range(transmit).1, FPS)?;
         events(Event::Info(format!("Encoder: {}", enc.label)));
 
-        // We send packed NV12 frames (twice the avatar width) in BT.709 limited range,
-        // exactly what the GPU pack shader produces.
-        let send_info = gst_video::VideoInfo::builder(gst_video::VideoFormat::Nv12, (w * 2) as u32, h as u32)
-            .fps(gst::Fraction::new(FPS as i32, 1))
-            .colorimetry(&"bt709".parse()?)
-            .build()?;
+        let send_info = packed_video_info(transmit)?;
         let caps = send_info.to_caps()?;
 
         // `tee` splits the encoded video to every partner; allow-not-linked = fine with none.
@@ -158,7 +181,20 @@ impl Session {
             events,
             closing: false,
             buffer_ms: DEFAULT_BUFFER_MS,
+            transmit,
         })
+    }
+
+    /// Change the transmit size. Only possible before the first partner joins (nothing
+    /// has been encoded yet) — e.g. when joining, once the room's settings arrive.
+    pub fn set_transmit_size(&mut self, transmit: (u32, u32)) -> Result<(), Error> {
+        if transmit == self.transmit || !self.partners.is_empty() {
+            return Ok(());
+        }
+        self.send_info = packed_video_info(transmit)?;
+        self.appsrc.set_caps(Some(&self.send_info.to_caps()?));
+        self.transmit = transmit;
+        Ok(())
     }
 
     /// Set the receive buffer (clamped to 20–500 ms), for current and future partners.
@@ -308,10 +344,18 @@ impl Session {
         }
     }
 
+    fn announce_sending(&self, sender_name: &str, packer: &Packer) {
+        (self.events)(Event::Info(format!(
+            "Sending \"{sender_name}\" ({}×{}) at {}×{}.",
+            packer.source_width, packer.source_height, packer.width, packer.height
+        )));
+    }
+
     /// Spread the upload budget over the partners (we send one stream to each).
     fn update_bitrate(&self) {
         let n = self.partners.len().max(1) as u32;
-        let kbps = (UPLOAD_BUDGET_KBPS / n).clamp(MIN_STREAM_KBPS, MAX_STREAM_KBPS);
+        let (min, max) = bitrate_range(self.transmit);
+        let kbps = (UPLOAD_BUDGET_KBPS / n).clamp(min, max);
         if let Some(enc) = &self.encoder {
             if enc.find_property("bitrate").is_some() {
                 enc.set_property_from_str("bitrate", &kbps.to_string());
@@ -359,16 +403,7 @@ impl Session {
         stop: &AtomicBool,
         tick: &mut impl FnMut(&mut Session) -> Result<(), Error>,
     ) -> Result<(), Error> {
-        let (w, h) = (packer.width, packer.height);
-        (self.events)(Event::Info(format!("Sending \"{sender_name}\" ({w}×{h}).")));
-
-        let layout = Nv12Layout {
-            y_offset: self.send_info.offset()[0],
-            y_stride: self.send_info.stride()[0] as usize,
-            uv_offset: self.send_info.offset()[1],
-            uv_stride: self.send_info.stride()[1] as usize,
-        };
-        let frame_size = self.send_info.size();
+        self.announce_sending(sender_name, &packer);
 
         let frame_ns = 1_000_000_000 / FPS;
         let frame_interval = Duration::from_nanos(frame_ns);
@@ -381,21 +416,28 @@ impl Session {
             tick(self)?;
             self.sync_group_source();
 
-            // If the avatar app restarted, reopen it (size must stay the same for now).
-            if i % FPS == 0 {
+            // Reopen the avatar if the VTubing app restarted or changed its size (it's
+            // scaled to the transmit size, so any size is fine), or if the transmit
+            // size changed (joining: the room's settings arrived).
+            let size_changed = (packer.width, packer.height) != self.transmit;
+            if i % FPS == 0 || size_changed {
                 if let Some(now) = spout::read_sender_info(sender_name) {
-                    if now.share_handle != packer.share_handle {
-                        let p = Packer::open(&now)?;
-                        if (p.width, p.height) != (w, h) {
-                            return Err("the avatar's resolution changed; restart the collab".into());
-                        }
-                        packer = p;
+                    if now.share_handle != packer.share_handle || size_changed {
+                        packer = Packer::open(&now, self.transmit)?;
+                        self.announce_sending(sender_name, &packer);
                     }
                 }
             }
 
             // Only capture and encode when someone is there to receive it.
             if !self.partners.is_empty() {
+                let layout = Nv12Layout {
+                    y_offset: self.send_info.offset()[0],
+                    y_stride: self.send_info.stride()[0] as usize,
+                    uv_offset: self.send_info.offset()[1],
+                    uv_stride: self.send_info.stride()[1] as usize,
+                };
+                let frame_size = self.send_info.size();
                 let mut buffer = gst::Buffer::with_size(frame_size)?;
                 {
                     let b = buffer.get_mut().ok_or("buffer not writable")?;
@@ -602,10 +644,16 @@ fn attach_receiver(
         //
         // d3d11h264dec decodes on any graphics card (NVIDIA, AMD or Intel) and hands
         // us NV12 in normal memory; the GPU unpack shader does the rest.
+        //
+        // TEST ONLY: VTC_DECODER=d3d11h264device1dec picks the decoder on the 2nd graphics
+        // card (e.g. to test an AMD/Intel decoder on a PC whose default card is NVIDIA).
+        let decoder = std::env::var("VTC_DECODER").unwrap_or_else(|_| "d3d11h264dec".into());
         let bin = match gst::parse::bin_from_description(
-            "rtph264depay request-keyframe=true wait-for-keyframe=true \
-             ! h264parse ! d3d11h264dec ! video/x-raw,format=NV12 \
-             ! appsink name=sink sync=false max-buffers=2 drop=true",
+            &format!(
+                "rtph264depay request-keyframe=true wait-for-keyframe=true \
+                 ! h264parse ! {decoder} ! video/x-raw,format=NV12 \
+                 ! appsink name=sink sync=false max-buffers=2 drop=true"
+            ),
             true,
         ) {
             Ok(b) => b,

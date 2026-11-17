@@ -23,7 +23,7 @@ use crate::events::{Event, EventSink, PeerId};
 use crate::group::GroupLayers;
 use crate::peer::{self, Error};
 use crate::rooms::{self, RoomError};
-use crate::session::{Role, Session};
+use crate::session::{self, Role, Session};
 use crate::signal::{self, FromRoom, RoomLink, RoomSettings, ToRoom};
 
 /// What the user decides about someone asking to join (host only).
@@ -69,7 +69,7 @@ impl Room {
         events: EventSink,
         room_events: std::sync::Arc<dyn Fn(RoomEvent) + Send + Sync>,
     ) -> Result<(Room, String), Error> {
-        let packer = open_avatar(sender_name)?;
+        let packer = open_avatar(sender_name, session::transmit_size_for(settings.max_people))?;
         let (code, token) = signal::create_room(settings)?;
         let link = RoomLink::connect(&code, my_name, Some(&token))?;
         let room = Self::start(link, packer, sender_name, my_name, events, room_events)?;
@@ -85,7 +85,8 @@ impl Room {
         room_events: std::sync::Arc<dyn Fn(RoomEvent) + Send + Sync>,
     ) -> Result<Room, Error> {
         let code = rooms::normalise(code).ok_or("that isn't a room code (like MINTY-OTTER-42)")?;
-        let packer = open_avatar(sender_name)?;
+        // Until the room tells us its size, assume the largest; switched on "welcome".
+        let packer = open_avatar(sender_name, session::transmit_size_for(2))?;
         let link = RoomLink::connect(&code, my_name, None).map_err(|e| match e {
             RoomError::NotFound => "that room code doesn't exist (or the room has closed)".into(),
             other => Error::from(other),
@@ -102,7 +103,7 @@ impl Room {
         room_events: std::sync::Arc<dyn Fn(RoomEvent) + Send + Sync>,
     ) -> Result<Room, Error> {
         gst::init()?;
-        let session = Session::start(packer.width as usize, packer.height as usize, events.clone())?;
+        let session = Session::start((packer.width, packer.height), events.clone())?;
         Ok(Room {
             link,
             session,
@@ -144,6 +145,8 @@ impl Room {
                     FromRoom::Welcome { host, members, settings, .. } => {
                         // Everyone in the room uses the host's buffer setting.
                         s.set_receive_buffer(settings.buffer_ms);
+                        // ...and sends video at the size that suits the room (before anyone connects).
+                        s.set_transmit_size(session::transmit_size_for(settings.max_people))?;
                         room_events(RoomEvent::Admitted { host, settings });
                         // We're the newcomer: offer a connection to everyone already here.
                         for m in members {
