@@ -13,12 +13,12 @@ mod xp;
 use std::time::{Duration, Instant};
 
 use collab::{ConnState, Event};
-use eframe::egui::{self, Color32, Rect, UiBuilder, pos2, vec2};
+use eframe::egui::{self, Color32, Rect, RichText, UiBuilder, pos2, vec2};
 
 use theme::colour;
 use worker::{FromWorker, ToWorker, Worker};
 
-const WINDOW_SIZE: [f32; 2] = [470.0, 400.0];
+const WINDOW_SIZE: [f32; 2] = [480.0, 440.0];
 const STATUS_BAR_HEIGHT: f32 = 22.0;
 
 fn main() -> eframe::Result {
@@ -35,12 +35,40 @@ fn main() -> eframe::Result {
     eframe::run_native("VTube Collab", options, Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))))
 }
 
+/// The host's short room code, as far as we know.
+enum Room {
+    Preparing,
+    Ready(String),
+    Expired,
+    Unavailable(String),
+}
+
 /// Which screen is showing, and what it needs to remember.
 enum Screen {
     Setup,
-    Host { invite: Option<String>, reply_input: String, error: Option<String> },
-    Join { invite_input: String, reply: Option<(String, String)>, error: Option<String> },
+    Host {
+        room: Room,
+        /// Long-code fallback.
+        invite: Option<String>,
+        show_long: bool,
+        reply_input: String,
+        error: Option<String>,
+    },
+    Join {
+        input: String,
+        /// Long-code mode: (our reply code, partner) to send back by hand.
+        reply: Option<(String, String)>,
+        /// Room mode: reply delivered; waiting to connect to this partner.
+        waiting_for: Option<String>,
+        error: Option<String>,
+    },
     Live { partner: String },
+}
+
+impl Screen {
+    fn new_host() -> Screen {
+        Screen::Host { room: Room::Preparing, invite: None, show_long: false, reply_input: String::new(), error: None }
+    }
 }
 
 struct App {
@@ -84,9 +112,23 @@ impl App {
         self.worker = None;
         self.screen = Screen::Setup;
         self.status = status.into();
+        self.clear_connection_info();
+    }
+
+    fn clear_connection_info(&mut self) {
         self.connection = None;
         self.publishing = None;
         self.stats = None;
+    }
+
+    /// (Re)start hosting: a fresh connection and a fresh room code.
+    fn start_hosting(&mut self, ctx: &egui::Context) {
+        self.worker = None; // stop any previous attempt first
+        self.clear_connection_info();
+        self.worker = Some(Worker::host(self.source.clone().unwrap(), self.name.trim().into(), ctx.clone()));
+        self.screen = Screen::new_host();
+        self.setup_error = None;
+        self.status = "Starting...".into();
     }
 
     fn refresh_sources(&mut self) {
@@ -104,11 +146,29 @@ impl App {
         for msg in messages {
             match msg {
                 FromWorker::Event(e) => self.handle_event(e),
+                FromWorker::RoomCode(code) => {
+                    if let Screen::Host { room, .. } = &mut self.screen {
+                        *room = Room::Ready(code);
+                    }
+                    self.status = "Room code ready. Send it to your partner.".into();
+                }
+                FromWorker::RoomUnavailable(why) => {
+                    if let Screen::Host { room, show_long, .. } = &mut self.screen {
+                        *room = Room::Unavailable(why);
+                        *show_long = true;
+                    }
+                    self.status = "Room codes unavailable; use the long code instead.".into();
+                }
+                FromWorker::RoomExpired => {
+                    if let Screen::Host { room, .. } = &mut self.screen {
+                        *room = Room::Expired;
+                    }
+                    self.status = "The room code expired.".into();
+                }
                 FromWorker::Invite(code) => {
                     if let Screen::Host { invite, .. } = &mut self.screen {
                         *invite = Some(code);
                     }
-                    self.status = "Invite code ready. Send it to your partner.".into();
                 }
                 FromWorker::ReplyRejected(e) => {
                     if let Screen::Host { error, .. } = &mut self.screen {
@@ -116,7 +176,7 @@ impl App {
                     }
                 }
                 FromWorker::Accepted(partner) => {
-                    self.status = format!("Connecting to {partner}...");
+                    self.status = format!("{partner} joined. Connecting...");
                     self.screen = Screen::Live { partner };
                 }
                 FromWorker::Reply { code, partner } => {
@@ -125,8 +185,23 @@ impl App {
                     }
                     self.status = format!("Reply code ready. Send it back to {partner}.");
                 }
+                FromWorker::ReplySent(partner) => {
+                    if let Screen::Join { waiting_for, .. } = &mut self.screen {
+                        *waiting_for = Some(partner.clone());
+                    }
+                    self.status = format!("Joined {partner}'s room. Connecting...");
+                }
                 FromWorker::Ended(error) => {
-                    // Show errors on the Setup screen too, so they're hard to miss.
+                    self.worker = None;
+                    // Joining failed before connecting (e.g. wrong room code): stay on the
+                    // Join screen so the code can be fixed. Anything else: back to Setup.
+                    if let (Screen::Join { error: join_error, waiting_for: None, reply: None, .. }, Some(e)) =
+                        (&mut self.screen, &error)
+                    {
+                        *join_error = Some(format!("Couldn't join: {e}"));
+                        self.status = "Couldn't join.".into();
+                        return;
+                    }
                     self.setup_error = error.as_ref().map(|e| format!("Stopped: {e}"));
                     self.reset(self.setup_error.clone().unwrap_or_else(|| "Collab ended.".into()));
                     return;
@@ -141,8 +216,14 @@ impl App {
             Event::Connection(state) => {
                 // The guest moves to the Live screen once the connection is up.
                 if state == ConnState::Connected {
-                    if let Screen::Join { reply: Some((_, partner)), .. } = &self.screen {
-                        self.screen = Screen::Live { partner: partner.clone() };
+                    let partner = match &self.screen {
+                        Screen::Join { reply: Some((_, p)), .. } | Screen::Join { waiting_for: Some(p), .. } => {
+                            Some(p.clone())
+                        }
+                        _ => None,
+                    };
+                    if let Some(partner) = partner {
+                        self.screen = Screen::Live { partner };
                     }
                 }
                 self.status = match state {
@@ -187,7 +268,7 @@ impl App {
             });
             ui.add_space(4.0);
             ui.label(
-                egui::RichText::new(
+                RichText::new(
                     "Your avatar is your VTubing app's Spout2 output. If the list is empty, \
                      turn on Spout2 output in your VTubing app.",
                 )
@@ -200,20 +281,16 @@ impl App {
         let ready = !self.name.trim().is_empty() && self.source.is_some();
         ui.horizontal(|ui| {
             if xp::button(ui, "Host a collab", ready, true).clicked() {
-                let worker = Worker::host(self.source.clone().unwrap(), self.name.trim().into(), ui.ctx().clone());
-                self.worker = Some(worker);
-                self.setup_error = None;
-                self.screen = Screen::Host { invite: None, reply_input: String::new(), error: None };
-                self.status = "Starting...".into();
+                self.start_hosting(ui.ctx());
             }
             if xp::button(ui, "Join a collab", ready, false).clicked() {
                 self.setup_error = None;
-                self.screen = Screen::Join { invite_input: String::new(), reply: None, error: None };
-                self.status = "Paste the invite code from your partner.".into();
+                self.screen = Screen::Join { input: String::new(), reply: None, waiting_for: None, error: None };
+                self.status = "Enter the room code from your partner.".into();
             }
         });
         if !ready {
-            ui.label(egui::RichText::new("Enter your name and pick your avatar to start.").size(11.0).color(colour::TEXT_DISABLED));
+            ui.label(RichText::new("Enter your name and pick your avatar to start.").size(11.0).color(colour::TEXT_DISABLED));
         }
         if let Some(e) = &self.setup_error {
             ui.add_space(4.0);
@@ -222,97 +299,143 @@ impl App {
     }
 
     fn host_screen(&mut self, ui: &mut egui::Ui) {
-        let Screen::Host { invite, reply_input, error } = &mut self.screen else { return };
+        let mut new_code = false;
+        let mut send_reply: Option<String> = None;
+        let Screen::Host { room, invite, show_long, reply_input, error } = &mut self.screen else { return };
 
-        xp::group(ui, "Step 1 — Send this invite code to your partner", |ui| match invite {
-            None => {
+        xp::group(ui, "Send this room code to your partner", |ui| match room {
+            Room::Preparing => {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label("Preparing your invite code...");
+                    ui.label("Getting a room code...");
                 });
             }
-            Some(code) => {
-                code_preview(ui, code, &mut self.copied_at);
+            Room::Ready(code) => {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(code.as_str()).font(theme::bold(20.0)).color(colour::GROUP_TITLE));
+                    ui.add_space(8.0);
+                    copy_button(ui, code, &mut self.copied_at);
+                });
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Waiting for your partner to join...");
+                });
+                ui.label(RichText::new("Room codes last 10 minutes. You can get a new one any time.").size(11.0).color(colour::TEXT_DISABLED));
+            }
+            Room::Expired => {
+                ui.colored_label(colour::ERROR, "This room code expired before anyone joined.");
+                ui.add_space(4.0);
+                new_code = xp::button(ui, "Get new room code", true, true).clicked();
+            }
+            Room::Unavailable(why) => {
+                ui.colored_label(colour::ERROR, "Room codes are unavailable right now.");
+                ui.label(RichText::new(format!("({why})")).size(11.0).color(colour::TEXT_DISABLED));
+                ui.label("Use the long code below instead.");
             }
         });
-        ui.add_space(8.0);
+        ui.add_space(6.0);
 
-        let mut connect = false;
-        xp::group(ui, "Step 2 — Paste your partner's reply code", |ui| {
-            ui.horizontal(|ui| {
-                let resp = xp::text_box(ui, reply_input, "VTC1-...", 300.0);
-                let enabled = invite.is_some() && !reply_input.trim().is_empty();
-                connect = xp::button(ui, "Connect", enabled, true).clicked()
-                    || (enabled && resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+        // Long-code fallback, folded away unless needed.
+        let header = if *show_long { "▼ Use long codes instead" } else { "▶ Use long codes instead" };
+        if ui.add(egui::Label::new(RichText::new(header).color(colour::GROUP_TITLE)).sense(egui::Sense::click())).clicked() {
+            *show_long = !*show_long;
+        }
+        if *show_long {
+            xp::group(ui, "Long codes (if room codes don't work)", |ui| {
+                match invite {
+                    Some(code) => {
+                        ui.label("1. Send this invite code to your partner:");
+                        code_preview(ui, code, &mut self.copied_at);
+                    }
+                    None => {
+                        ui.label("Preparing the invite code...");
+                    }
+                }
+                ui.label("2. Paste their reply code:");
+                ui.horizontal(|ui| {
+                    let resp = xp::text_box(ui, reply_input, "VTC1-...", 300.0);
+                    let enabled = invite.is_some() && !reply_input.trim().is_empty();
+                    let go = xp::button(ui, "Connect", enabled, false).clicked()
+                        || (enabled && resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                    if go {
+                        send_reply = Some(reply_input.trim().to_string());
+                    }
+                });
+                if let Some(e) = error {
+                    ui.colored_label(colour::ERROR, e.as_str());
+                }
             });
-            if let Some(e) = error {
-                ui.colored_label(colour::ERROR, e.as_str());
-            }
-        });
-        if connect {
+        }
+
+        if let Some(reply) = send_reply {
             *error = None;
             if let Some(w) = &self.worker {
-                w.send(ToWorker::Reply(reply_input.trim().to_string()));
+                w.send(ToWorker::Reply(reply));
             }
         }
 
         ui.add_space(10.0);
         if xp::button(ui, "Cancel", true, false).clicked() {
             self.reset("Cancelled.");
+        } else if new_code {
+            self.start_hosting(ui.ctx());
         }
     }
 
     fn join_screen(&mut self, ui: &mut egui::Ui) {
-        let Screen::Join { invite_input, reply, error } = &mut self.screen else { return };
+        let Screen::Join { input, reply, waiting_for, error } = &mut self.screen else { return };
         let mut start: Option<String> = None;
+        let busy = self.worker.is_some();
 
-        xp::group(ui, "Step 1 — Paste the invite code from your partner", |ui| {
+        xp::group(ui, "Enter the room code from your partner", |ui| {
             ui.horizontal(|ui| {
-                let enabled = reply.is_none() && self.worker.is_none();
-                let resp = xp::text_box(ui, invite_input, "VTC1-...", 300.0);
-                let go = xp::button(ui, "Next", enabled && !invite_input.trim().is_empty(), true).clicked()
+                let resp = xp::text_box(ui, input, "e.g. MINTY-OTTER-42", 260.0);
+                let enabled = !busy && !input.trim().is_empty();
+                let go = xp::button(ui, "Join", enabled, true).clicked()
                     || (enabled && resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
                 if go {
-                    // Check the code here first, so a bad paste is reported instantly.
-                    match collab::code::decode(invite_input) {
-                        Ok(_) => start = Some(invite_input.trim().to_string()),
-                        Err(e) => *error = Some(format!("That code didn't work: {e}")),
+                    // Check the format here, so typos are reported instantly.
+                    if collab::code::decode(input).is_ok() || collab::rooms::normalise(input).is_some() {
+                        start = Some(input.trim().to_string());
+                    } else {
+                        *error = Some("That isn't a room code (like MINTY-OTTER-42).".into());
                     }
                 }
             });
+            ui.label(RichText::new("A long invite code (VTC1-...) works here too.").size(11.0).color(colour::TEXT_DISABLED));
             if let Some(e) = error {
                 ui.colored_label(colour::ERROR, e.as_str());
             }
         });
         ui.add_space(8.0);
 
-        match reply {
-            Some((code, partner)) => {
-                let title = format!("Step 2 — Send this reply code back to {partner}");
-                xp::group(ui, &title, |ui| {
-                    code_preview(ui, code, &mut self.copied_at);
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(format!("Waiting for {partner} to connect..."));
+        if let Some((code, partner)) = reply {
+            // Long-code mode: the reply has to be sent back by hand.
+            let title = format!("Send this reply code back to {partner}");
+            xp::group(ui, &title, |ui| {
+                code_preview(ui, code, &mut self.copied_at);
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(format!("Waiting for {partner} to connect..."));
+                });
+            });
+        } else if busy {
+            xp::group(ui, "Joining", |ui| {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(match waiting_for {
+                        Some(p) => format!("Joined {p}'s room. Connecting..."),
+                        None => "Joining the room...".into(),
                     });
                 });
-            }
-            None if self.worker.is_some() => {
-                xp::group(ui, "Step 2 — Reply code", |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label("Preparing your reply code...");
-                    });
-                });
-            }
-            None => {}
+            });
         }
 
-        if let Some(invite) = start {
+        if let Some(text) = start {
             *error = None;
-            let worker = Worker::join(self.source.clone().unwrap(), self.name.trim().into(), invite, ui.ctx().clone());
+            let worker = Worker::join(self.source.clone().unwrap(), self.name.trim().into(), text, ui.ctx().clone());
             self.worker = Some(worker);
-            self.status = "Starting...".into();
+            self.status = "Joining...".into();
         }
 
         ui.add_space(10.0);
@@ -334,7 +457,7 @@ impl App {
                     _ => (colour::WAIT, format!("Connecting to {partner}...")),
                 };
                 xp::status_dot(ui, dot);
-                ui.label(egui::RichText::new(text).font(theme::bold(13.0)));
+                ui.label(RichText::new(text).font(theme::bold(13.0)));
             });
             ui.add_space(6.0);
 
@@ -349,7 +472,7 @@ impl App {
 
             let source = self.publishing.clone().unwrap_or_else(|| format!("{}{partner}", collab::PARTNER_PREFIX));
             ui.label("In OBS, add a Spout2 Capture source and pick:");
-            ui.label(egui::RichText::new(format!("    {source}")).font(theme::bold(12.0)));
+            ui.label(RichText::new(format!("    {source}")).font(theme::bold(12.0)));
             ui.add_space(6.0);
             egui::Grid::new("stats").num_columns(2).spacing(vec2(16.0, 4.0)).show(ui, |ui| {
                 let fps = |v: Option<f64>| v.map(|f| format!("{f:.0} fps")).unwrap_or_else(|| "—".into());
@@ -369,19 +492,24 @@ impl App {
     }
 }
 
-/// A shortened code with a "Copy" button (codes are ~1000 characters long).
+/// "Copy" button that puts `text` on the clipboard and briefly shows "Copied!".
+fn copy_button(ui: &mut egui::Ui, text: &str, copied_at: &mut Option<Instant>) {
+    if xp::button(ui, "Copy", true, false).clicked() {
+        ui.ctx().copy_text(text.to_string());
+        *copied_at = Some(Instant::now());
+    }
+    if copied_at.is_some_and(|t| t.elapsed() < Duration::from_secs(2)) {
+        ui.label(RichText::new("Copied!").color(colour::OK));
+        ui.ctx().request_repaint_after(Duration::from_millis(200));
+    }
+}
+
+/// A shortened long code with a "Copy" button (long codes are ~1000 characters).
 fn code_preview(ui: &mut egui::Ui, code: &str, copied_at: &mut Option<Instant>) {
     ui.horizontal(|ui| {
-        let short: String = code.chars().take(34).collect();
-        ui.label(egui::RichText::new(format!("{short}…")).monospace().background_color(Color32::WHITE));
-        if xp::button(ui, "Copy", true, true).clicked() {
-            ui.ctx().copy_text(code.to_string());
-            *copied_at = Some(Instant::now());
-        }
-        if copied_at.is_some_and(|t| t.elapsed() < Duration::from_secs(2)) {
-            ui.label(egui::RichText::new("Copied!").color(colour::OK));
-            ui.ctx().request_repaint_after(Duration::from_millis(200));
-        }
+        let short: String = code.chars().take(30).collect();
+        ui.label(RichText::new(format!("{short}…")).monospace().background_color(Color32::WHITE));
+        copy_button(ui, code, copied_at);
     });
 }
 

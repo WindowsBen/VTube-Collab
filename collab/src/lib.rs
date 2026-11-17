@@ -6,6 +6,7 @@ mod connection;
 mod encoder;
 pub mod events;
 mod peer;
+pub mod rooms;
 mod session;
 
 pub use connection::Connection;

@@ -145,7 +145,16 @@ Progress:
   (codes with Copy buttons) → Collab (status dot, OBS source name, fps). Connection runs on a worker thread.
 - ✅ `collab` split into a library (`Connection` API + events) and the CLI; new `collab list`.
 - ✅ Bundle includes the app + `Start VTube Collab.bat` (17.9 MB zip).
-- ⬜ Short room codes via a free Cloudflare handshake server.
+- ✅ Short room codes (e.g. `MINTY-OTTER-42`) via the handshake server in `handshake/`:
+  Cloudflare Worker + SQLite Durable Object per room, deployed 2026-11-17 to
+  **https://vtube-collab.mpavatars-relay.workers.dev** (owner's existing account, **Workers Free plan**:
+  over the shared 100k requests/day the server just errors until 00:00 UTC — never add a payment method or
+  upgrade). Mailbox only: host posts invite → guest takes it once → guest posts reply → host polls (1/s) and
+  takes it; room deleted. Rooms expire after 10 min (app offers "Get new room code"); codes ≤ 8 KB.
+  The collab itself doesn't depend on the server after connecting. Long codes remain as fallback
+  (app: "Use long codes instead"; CLI: `--long`). `VTC_SERVER` env var overrides the server (local tests:
+  `npx wrangler dev`, `--var ROOM_LIFETIME_SECONDS:5` to test expiry).
+  Redeploy: `cd handshake && npx wrangler deploy` (wrangler logged in via OAuth on the dev PC).
 
 Code layout: `vtc-core/` (shared: Spout capture/output, packing), `collab/` (the app),
 `spout-probe/` and `encode-test/` (test tools).

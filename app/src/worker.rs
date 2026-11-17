@@ -1,7 +1,7 @@
 //! Runs a collab connection on a background thread, so the window never freezes.
 //!
 //! The window and the worker talk through two channels:
-//!   window → worker: `ToWorker` (e.g. the pasted reply code)
+//!   window → worker: `ToWorker` (e.g. a pasted long reply code)
 //!   worker → window: `FromWorker` (codes, connection events, the end)
 //! Every message to the window also asks egui to redraw, so it shows up at once.
 
@@ -9,26 +9,38 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use collab::{Connection, Event, EventSink};
+use collab::rooms::{self, RoomError};
+use collab::{code, Connection, Event, EventSink};
 use eframe::egui;
 
+/// How often the host checks the room for the guest's reply.
+const POLL_EVERY: Duration = Duration::from_secs(1);
+
 pub enum ToWorker {
-    /// Host only: the partner's reply code, as pasted.
+    /// Host, long-code mode: the partner's reply code, as pasted.
     Reply(String),
 }
 
 pub enum FromWorker {
     Event(Event),
-    /// Host: our invite code is ready.
+    /// Host: short room code ready.
+    RoomCode(String),
+    /// Host: room codes can't be used right now (why); long codes still work.
+    RoomUnavailable(String),
+    /// Host: nobody joined before the room code expired.
+    RoomExpired,
+    /// Host: our long invite code (fallback).
     Invite(String),
-    /// Host: the pasted reply code was wrong (message says why).
+    /// Host: a pasted long reply code was wrong (message says why).
     ReplyRejected(String),
-    /// Host: reply accepted; connecting to this partner.
+    /// Host: a partner joined; connecting.
     Accepted(String),
-    /// Guest: our reply code is ready to send back to this partner.
+    /// Guest (long codes): our reply code is ready to send back to this partner.
     Reply { code: String, partner: String },
+    /// Guest (room code): reply delivered automatically; connecting to this partner.
+    ReplySent(String),
     /// The connection ended (`Some(message)` if because of an error).
     Ended(Option<String>),
 }
@@ -44,8 +56,22 @@ impl Worker {
     pub fn host(source: String, name: String, ctx: egui::Context) -> Worker {
         Self::spawn(ctx, move |send, events, inbox, stop| {
             let (mut conn, invite) = Connection::host(&source, &name, events)?;
+
+            // A short room code if the server is reachable; the long code always works too.
+            let mut room = match rooms::create(&invite) {
+                Ok(code) => {
+                    send(FromWorker::RoomCode(code.clone()));
+                    Some(code)
+                }
+                Err(e) => {
+                    send(FromWorker::RoomUnavailable(e.to_string()));
+                    None
+                }
+            };
             send(FromWorker::Invite(invite));
-            // Wait for a valid reply code (checking for "stop" every 100 ms).
+
+            // Wait for the partner: through the room, or a pasted long reply code.
+            let mut last_poll = Instant::now() - POLL_EVERY;
             loop {
                 if stop.load(Ordering::Relaxed) {
                     return Ok(());
@@ -58,18 +84,49 @@ impl Worker {
                         }
                         Err(e) => send(FromWorker::ReplyRejected(e.to_string())),
                     },
-                    Err(RecvTimeoutError::Timeout) => continue,
                     Err(RecvTimeoutError::Disconnected) => return Ok(()),
+                    Err(RecvTimeoutError::Timeout) => {}
+                }
+                if let Some(code) = &room {
+                    if last_poll.elapsed() >= POLL_EVERY {
+                        last_poll = Instant::now();
+                        match rooms::poll_reply(code) {
+                            Ok(Some(reply)) => {
+                                let partner = conn.accept_reply(&reply)?;
+                                send(FromWorker::Accepted(partner));
+                                break;
+                            }
+                            Ok(None) => {}
+                            Err(RoomError::NotFound) => {
+                                send(FromWorker::RoomExpired);
+                                room = None;
+                            }
+                            // A network hiccup: just try again next second.
+                            Err(_) => {}
+                        }
+                    }
                 }
             }
             conn.run(&stop)
         })
     }
 
-    pub fn join(source: String, name: String, invite: String, ctx: egui::Context) -> Worker {
+    /// `input` = a room code (MINTY-OTTER-42) or a long invite code (VTC1-...).
+    pub fn join(source: String, name: String, input: String, ctx: egui::Context) -> Worker {
         Self::spawn(ctx, move |send, events, _inbox, stop| {
-            let (conn, code, partner) = Connection::join(&source, &name, &invite, events)?;
-            send(FromWorker::Reply { code, partner });
+            let room = if code::decode(&input).is_ok() { None } else { rooms::normalise(&input) };
+            let invite = match &room {
+                Some(room) => rooms::take_invite(room)?,
+                None => input,
+            };
+            let (conn, reply, partner) = Connection::join(&source, &name, &invite, events)?;
+            match &room {
+                Some(room) => {
+                    rooms::put_reply(room, &reply)?;
+                    send(FromWorker::ReplySent(partner));
+                }
+                None => send(FromWorker::Reply { code: reply, partner }),
+            }
             conn.run(&stop)
         })
     }

@@ -1,0 +1,12 @@
+{
+  "name": "vtube-collab-handshake",
+  "private": true,
+  "description": "Handshake (room code) server for VTube Collab, on Cloudflare Workers",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.163.0"
+  }
+}

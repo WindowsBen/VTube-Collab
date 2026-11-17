@@ -1,0 +1,18 @@
+# Cloudflare Worker settings for the VTube Collab handshake server.
+# Deploy: `npx wrangler deploy` (from this folder). Local test: `npx wrangler dev`.
+# Runs on the Workers Free plan: when the daily free limit is used up, requests
+# fail until midnight UTC — nothing is charged.
+
+name = "vtube-collab"
+main = "src/index.js"
+compatibility_date = "2026-11-01"
+
+# Each room is a Durable Object of class "Room", reachable from the code as env.ROOMS.
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "Room"
+
+# Free plan: Durable Objects must use the SQLite storage backend.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]
