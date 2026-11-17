@@ -9,14 +9,7 @@ PNGtuber tools, etc.) collab with each other easily: low latency, correct resolu
 real transparency (no green-screen keying), and each partner showing up as a ready-made
 source in OBS.
 
-## 2. Ground rules for development
-
-- Files are only created inside `E:\VTube Collab`.
-- Nothing is pushed to GitHub by Claude — the project owner pushes.
-- No change (files, commands, installs) is made without consulting the owner first.
-- The owner is new to Rust: every step is explained in plain language.
-
-## 3. Decisions so far
+## 2. Decisions so far
 
 | Topic | Decision |
 |---|---|
@@ -30,7 +23,7 @@ source in OBS.
 | Video pipeline | **GStreamer** (hardware encoding for NVIDIA/AMD/Intel, built-in WebRTC), behind our own interfaces |
 | Relay fallback | Allowed for users whose networks block direct connections, as long as it costs nothing (check Cloudflare's relay free allowance before relying on it) |
 
-## 4. How it works (high level)
+## 3. How it works (high level)
 
 ```
  Your VTubing app ──Spout2/NDI/capture──► VTube Collab ──P2P video──► Partner's VTube Collab ──Spout2──► Partner's OBS
@@ -75,14 +68,14 @@ Rough upload need per person (~3 Mbps per 720p30 stream with transparency):
   the GPU the sender renders on. The default adapter happened to match, but the app must pick the
   adapter explicitly (match the sender's GPU) on multi-GPU PCs.
 
-## 5. Ideas parked for later
+## 4. Ideas parked for later
 - Sending **tracking data only** (VMC protocol) for 3D users: tiny bandwidth, but the partner
   needs the model file (licensing concerns).
 - Native OBS plugin.
 - macOS support.
 - Volunteer hub for large rooms.
 
-## 6. Known issues (may revisit)
+## 5. Known issues (may revisit)
 - **Host received only ~50–55 fps** in the 2-PC test (2026-11-17), while the friend sent and received 60.
   Decoder confirmed on the RTX 3060 (not the AMD iGPU). Likely local load on the host PC, or packet loss
   friend → host. Since then: NACK enabled, 120 ms buffer default, and per-partner loss diagnostics — the next
@@ -95,14 +88,14 @@ Rough upload need per person (~3 Mbps per 720p30 stream with transparency):
   graphics driver; connected adds GStreamer, encoder/decoder and frame buffers. Possible later: zero-copy GPU path
   (CPU), smaller buffers / wgpu renderer (memory).
 
-## 7. Open questions
+## 6. Open questions
 - UI library: Slint or egui?
 - ~~Video pipeline~~ **Decided (2026-11-16): GStreamer 1.28.x** for encode/decode and WebRTC.
   Kept behind our own small "encoder" and "connection" interfaces, so parts can later be swapped
   for FFmpeg + `str0m` if app size or overhead becomes a problem. Adds ~60–100 MB of bundled DLLs.
 - Exact P2P library: `webrtc-rs`, `str0m`, or `iroh`.
 
-## 8. Roadmap
+## 7. Roadmap
 
 ### Milestone 1 — proof of concept
 Two people, Windows only: invite code → one Spout2 source in → transparent video over a direct
@@ -221,5 +214,5 @@ engine + CLI), `app/` (window), `handshake/` (Cloudflare room server), `spout-pr
 ### Setup steps (in order)
 1. ✅ Write this design document
 2. ✅ Install the Rust toolchain (`rustup`) — already present: Rust 1.97.1 (msvc) + VS Build Tools 2026
-3. ✅ Set up a local git repository (never pushed by Claude)
+3. ✅ Set up a local git repository
 4. ✅ First program: list the Spout2 sources on this PC (`spout-probe/`) — verified with Avatar Live (1920×1080, RGBA 8-bit)
