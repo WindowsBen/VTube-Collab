@@ -113,18 +113,22 @@ Before unzipping: right-click the zip > Properties > tick "Unblock" > OK.
 1. Turn on Spout2 output in your VTubing app.
 2. Double-click "Start VTube Collab.bat".
 3. Enter your name and pick your avatar from the list.
-4. One person clicks "Host a collab" and sends the invite code (Copy button) to the other.
-   The other clicks "Join a collab", pastes it, and sends the reply code back.
-   The host pastes the reply code and clicks Connect.
-5. In OBS, add a Spout2 Capture source and pick "Collab - <partner's name>".
+4. The host clicks "Host a collab...", chooses the room settings, clicks "Open room"
+   and shares the room code (e.g. MINTY-OTTER-42). Everyone else clicks "Join a collab...",
+   types the code, and waits for the host to click Accept.
+5. In OBS, add a Spout2 Capture source for each person: "Collab - <their name>".
+   Want everyone in one source instead? Tick "Publish a group source" in the app and
+   pick "Collab - Group" (off by default to save resources).
+
+Help > How to use... opens these steps in a separate window you can keep open.
 
 Allow VTube Collab through Windows Firewall when asked. Windows may warn that the app
 is unrecognised (it isn't signed yet): click "More info" > "Run anyway".
 
 Command-line version (for testing), in the 'bin' folder:
     collab.exe list
-    collab.exe host "Avatar Live" --name Ben
-    collab.exe join "Warudo Camera 1" --name Beat
+    collab.exe host "Avatar Live" --name Ben [--group]
+    collab.exe join "Warudo Camera 1" --name Beat [--group]
 
 Includes GStreamer (LGPL) and Microsoft C++ runtime libraries; licences in the 'licenses' folder.
 "@ | Set-Content "$bundle\README.txt" -Encoding UTF8
