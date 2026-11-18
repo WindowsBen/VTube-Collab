@@ -180,6 +180,13 @@ pub fn open_shared(share_handle: u32) -> Result<(ID3D11Device, ID3D11DeviceConte
     ))
 }
 
+/// The ID of the graphics card in use, if it isn't Windows' default, as one number
+/// (the way GStreamer's video decoders report theirs).
+pub fn card_id_in_use() -> Option<i64> {
+    let chosen = *CHOSEN_CARD.lock().unwrap();
+    chosen.map(|l| ((l.HighPart as i64) << 32) | l.LowPart as i64)
+}
+
 /// Name of the graphics card in use, for the log file.
 pub fn card_in_use() -> String {
     let chosen = *CHOSEN_CARD.lock().unwrap();

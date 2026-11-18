@@ -21,6 +21,8 @@ use eframe::egui;
 pub enum ToWorker {
     Approve(PeerId),
     Decline(PeerId),
+    /// Host: take someone out of the room.
+    Remove(PeerId),
     /// Long-code host: the partner's reply code, as pasted.
     Reply(String),
 }
@@ -174,6 +176,10 @@ fn forward_commands(inbox: Receiver<ToWorker>) -> Receiver<RoomCommand> {
                 ToWorker::Decline(id) => {
                     collab::log::info(&format!("Host declined {id}"));
                     RoomCommand::Decline(id)
+                }
+                ToWorker::Remove(id) => {
+                    collab::log::info(&format!("Host removed {id}"));
+                    RoomCommand::Remove(id)
                 }
                 ToWorker::Reply(_) => continue,
             };

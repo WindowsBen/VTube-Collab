@@ -37,7 +37,7 @@ impl Connection {
     pub fn host(sender_name: &str, my_name: &str, events: EventSink) -> Result<(Connection, String), Error> {
         let packer = open_avatar(sender_name, TWO_PERSON)?;
         gst::init()?;
-        let mut session = Session::start(TWO_PERSON, events.clone())?;
+        let mut session = Session::start(TWO_PERSON, (packer.source_width, packer.source_height), events.clone())?;
         session.add_partner(PARTNER, "partner", Role::Offerer)?;
 
         events(Event::Info("Preparing invite code (finding your network addresses)...".into()));
@@ -71,7 +71,7 @@ impl Connection {
         let invite = code::decode(invite_text)?;
         let packer = open_avatar(sender_name, TWO_PERSON)?;
         gst::init()?;
-        let mut session = Session::start(TWO_PERSON, events.clone())?;
+        let mut session = Session::start(TWO_PERSON, (packer.source_width, packer.source_height), events.clone())?;
         session.add_partner(PARTNER, &invite.name, Role::Answerer)?;
 
         let webrtc = session.partner_webrtc(PARTNER).expect("just added");

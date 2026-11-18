@@ -1,7 +1,7 @@
 //! TEST ONLY — preview mode for screenshots: `VTC_PREVIEW=<screen>` opens a screen
 //! filled with sample people and stats, without connecting to anything.
 //!
-//!   setup, settings, join, waiting, room, guest, long, about, howto, menu, error
+//!   setup, settings, join, waiting, room, guest, long, about, howto, menu, error, remove
 //!   — add "+about" or "+howto" to open that dialog on top, e.g. "setup+howto".
 
 use std::sync::{Arc, Mutex};
@@ -59,7 +59,7 @@ fn apply_screen(app: &mut App, which: &str) {
             app.setup_error = Some(e.into());
             app.status = e.into();
         }
-        "room" | "guest" | "about" | "howto" => {
+        "room" | "guest" | "about" | "howto" | "remove" => {
             let host = which != "guest";
             app.screen = Screen::Room { code: Some("MINTY-OTTER-42".into()), host, long_codes: false };
             app.room_settings = Some(RoomSettings::default());
@@ -88,6 +88,9 @@ fn apply_screen(app: &mut App, which: &str) {
                 layer("m2", "Beat", true, false),
                 layer("me", "You (Ben)", false, true),
             ])));
+            if which == "remove" {
+                app.confirm_remove = Some("m3".into()); // "are you sure?" for Mia
+            }
             match which {
                 "about" => app.dialogs.push((Dialog::About, None)),
                 "howto" => app.dialogs.push((Dialog::HowTo, None)),

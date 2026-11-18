@@ -30,7 +30,12 @@ use crate::signal::{self, FromRoom, RoomLink, RoomSettings, ToRoom};
 pub enum RoomCommand {
     Approve(PeerId),
     Decline(PeerId),
+    /// Take someone who's in the room out of it.
+    Remove(PeerId),
 }
+
+/// Why the collab ended when the host removed us (the app shows its own wording for it).
+pub const REMOVED: &str = "the host removed you from the room";
 
 /// Room happenings, for the app's member list and join requests.
 #[derive(Debug, Clone)]
@@ -45,8 +50,13 @@ pub enum RoomEvent {
     MemberLeft { id: PeerId, name: String },
     /// The host left; we approve newcomers now.
     BecameHost,
-    /// Our connection to the room server dropped. People already connected stay
-    /// connected (video doesn't go through the server), but nobody new can join.
+    /// Our connection to the room server dropped; reconnecting by itself. Video keeps
+    /// flowing meanwhile (it doesn't go through the server).
+    ServerReconnecting,
+    /// Reconnected to the room server. `host` = we're (still) the host.
+    ServerBack { host: bool },
+    /// Our connection to the room server is gone for good. People already connected
+    /// stay connected, but nobody new can join.
     ServerLost,
 }
 
@@ -103,7 +113,7 @@ impl Room {
         room_events: std::sync::Arc<dyn Fn(RoomEvent) + Send + Sync>,
     ) -> Result<Room, Error> {
         gst::init()?;
-        let session = Session::start((packer.width, packer.height), events.clone())?;
+        let session = Session::start((packer.width, packer.height), (packer.source_width, packer.source_height), events.clone())?;
         Ok(Room {
             link,
             session,
@@ -137,7 +147,23 @@ impl Room {
                 link.send(match cmd {
                     RoomCommand::Approve(id) => ToRoom::Approve { id },
                     RoomCommand::Decline(id) => ToRoom::Decline { id },
+                    RoomCommand::Remove(id) => {
+                        // Take them out here too at once (the room tells everyone else).
+                        if let Some(name) = s.partner_name(&id) {
+                            s.remove_partner(&id);
+                            room_events(RoomEvent::MemberLeft { id: id.clone(), name });
+                        }
+                        ToRoom::Remove { id }
+                    }
                 });
+            }
+            // Partners whose video stopped (their app or connection died without the
+            // room server telling us): remove them, so their source doesn't stay frozen.
+            for id in s.take_lost_partners() {
+                let Some(name) = s.partner_name(&id) else { continue };
+                s.remove_partner(&id);
+                events(Event::Warning(format!("lost the connection to {name}")));
+                room_events(RoomEvent::MemberLeft { id, name });
             }
             while let Ok(msg) = link.incoming.try_recv() {
                 match msg {
@@ -157,6 +183,7 @@ impl Room {
                     }
                     FromRoom::Declined => return Err("the host didn't let you in".into()),
                     FromRoom::RoomFull => return Err("the room is full".into()),
+                    FromRoom::Removed => return Err(REMOVED.into()),
                     FromRoom::JoinRequest { id, name } => room_events(RoomEvent::JoinRequest { id, name }),
                     FromRoom::JoinCancelled { id } => room_events(RoomEvent::JoinCancelled { id }),
                     FromRoom::MemberJoined { id, name } => {
@@ -165,13 +192,23 @@ impl Room {
                         room_events(RoomEvent::MemberJoined { id, name });
                     }
                     FromRoom::MemberLeft { id } => {
-                        let name = s.partner_name(&id).unwrap_or_default();
+                        // Already removed if their video had stopped.
+                        let Some(name) = s.partner_name(&id) else { continue };
                         s.remove_partner(&id);
                         room_events(RoomEvent::MemberLeft { id, name });
                     }
                     FromRoom::YouAreHost => room_events(RoomEvent::BecameHost),
                     FromRoom::Signal { from, data } => handle_signal(s, &from, &data, &my_name, &out, &events),
-                    FromRoom::Disconnected => {
+                    FromRoom::Reconnecting { .. } => room_events(RoomEvent::ServerReconnecting),
+                    FromRoom::Resumed { host } => {
+                        server_lost = false;
+                        room_events(RoomEvent::ServerBack { host });
+                    }
+                    FromRoom::ResumeFailed => {
+                        events(Event::Warning("the room server had already let us go".into()));
+                    }
+                    FromRoom::Disconnected { why } => {
+                        crate::log::warning(&format!("Room server connection lost: {why}"));
                         if !server_lost {
                             server_lost = true;
                             room_events(RoomEvent::ServerLost);

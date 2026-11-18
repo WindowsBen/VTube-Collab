@@ -144,9 +144,25 @@ fn print_room_event(event: RoomEvent, approve: &Mutex<Option<mpsc::Sender<RoomCo
             }
         }
         RoomEvent::JoinCancelled { .. } => println!("[room] someone stopped waiting to join"),
-        RoomEvent::MemberJoined { name, .. } => println!("[room] {name} is in the room"),
+        RoomEvent::MemberJoined { id, name } => {
+            println!("[room] {name} is in the room");
+            // TEST ONLY: VTC_TEST_REMOVE=<name> makes the host remove that person 10 s after they join.
+            if std::env::var("VTC_TEST_REMOVE").is_ok_and(|n| n == name) {
+                if let Some(tx) = approve.lock().unwrap().clone() {
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(10));
+                        println!("[room] removing {name} (test)");
+                        let _ = tx.send(RoomCommand::Remove(id));
+                    });
+                }
+            }
+        }
         RoomEvent::MemberLeft { name, .. } => println!("[room] {name} left"),
         RoomEvent::BecameHost => println!("[room] the host left — you're the host now"),
+        RoomEvent::ServerReconnecting => eprintln!("[room] room server connection dropped; reconnecting..."),
+        RoomEvent::ServerBack { host } => {
+            println!("[room] reconnected to the room server{}", if host { " (host)" } else { "" })
+        }
         RoomEvent::ServerLost => eprintln!("[room] lost the room server; nobody new can join"),
     }
 }

@@ -46,14 +46,36 @@ pub fn transmit_size_for(max_people: u32) -> (u32, u32) {
     }
 }
 
+/// The size we actually send at: the room's size, but never bigger than needed for
+/// the avatar's own image. A 1266×662 window in a 1080p room is sent at 1266×712
+/// (same 16:9 shape as everyone else's), not stretched up to 1920×1080 — stretching
+/// adds no detail, only work for everyone's decoder. Receivers stretch it back to
+/// the room's size, so their OBS sources keep the size they expect.
+fn fit_transmit(room: (u32, u32), source: (u32, u32)) -> (u32, u32) {
+    let (rw, rh) = (room.0 as f64, room.1 as f64);
+    let fits = (rw / source.0.max(1) as f64).min(rh / source.1.max(1) as f64);
+    if fits <= 1.0 {
+        return room; // the source is at least as big: scale it down to the room's size
+    }
+    // Shrink the room's frame until the source fills it, but not below 640 wide.
+    let scale = (1.0 / fits).max(640.0 / rw).min(1.0);
+    ((rw * scale).round() as u32 & !1, (rh * scale).round() as u32 & !1)
+}
+
 /// Bitrate range (min, max kbps) for one stream at this transmit size.
 fn bitrate_range(transmit: (u32, u32)) -> (u32, u32) {
-    match transmit.1 {
-        1000.. => (2500, 8000), // 1080p
-        700.. => (1800, 4500),  // 720p
-        _ => (1200, 2800),      // 540p
+    match transmit.0 * transmit.1 {
+        1_500_000.. => (2500, 8000), // around 1080p
+        800_000.. => (1800, 4500),   // around 720p
+        _ => (1200, 2800),           // smaller
     }
 }
+
+/// A partner who sent no video for this long is treated as gone (their app or
+/// connection died without the room server noticing).
+const PARTNER_TIMEOUT: Duration = Duration::from_secs(30);
+/// ...and one whose video never started at all, after this long.
+const FIRST_VIDEO_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// How long incoming video is held before showing it, so packets that arrive late or
 /// get resent after being lost can still be used. More = smoother on bad connections,
@@ -100,6 +122,9 @@ struct Partner {
     requests_at_last_report: u32,
     spout_stop: Arc<AtomicBool>,
     spout_thread: Option<JoinHandle<Result<(), String>>>,
+    /// When they were added, and when their video last arrived (for spotting dead partners).
+    added_at: Instant,
+    last_video_at: Option<Instant>,
 }
 
 pub struct Session {
@@ -122,8 +147,18 @@ pub struct Session {
     closing: bool,
     /// Receive buffer for incoming video, in milliseconds.
     buffer_ms: u32,
-    /// The size our avatar is sent at (see `transmit_size_for`).
+    /// The room's video size (see `transmit_size_for`). Partners' sources are this size.
+    room_size: (u32, u32),
+    /// Our avatar's own image size.
+    source_size: (u32, u32),
+    /// The size our avatar is actually sent at (see `fit_transmit`).
     transmit: (u32, u32),
+    /// Set once the first frame is sent; the transmit size can't change after that.
+    sent_any: bool,
+    /// The video decoder to use (on the same graphics card as the avatar).
+    decoder: String,
+    /// Partners whose video stopped (see `take_lost_partners`).
+    lost: Vec<PeerId>,
 }
 
 /// Memory layout of the packed NV12 frames we send for a `transmit`-sized avatar:
@@ -136,11 +171,14 @@ fn packed_video_info(transmit: (u32, u32)) -> Result<gst_video::VideoInfo, Error
 }
 
 impl Session {
-    /// Build the sending pipeline for avatars sent at `transmit` size, and start it
-    /// (no partners yet).
-    pub fn start(transmit: (u32, u32), events: EventSink) -> Result<Session, Error> {
+    /// Build the sending pipeline for a room whose video size is `room`, for an
+    /// avatar image of `source` size, and start it (no partners yet).
+    pub fn start(room: (u32, u32), source: (u32, u32), events: EventSink) -> Result<Session, Error> {
+        let transmit = fit_transmit(room, source);
         let enc = encoder::pick(bitrate_range(transmit).1, FPS)?;
         events(Event::Info(format!("Encoder: {}", enc.label)));
+        let (decoder, decoder_label) = pick_decoder();
+        events(Event::Info(format!("Decoder: {decoder_label}")));
 
         let send_info = packed_video_info(transmit)?;
         let caps = send_info.to_caps()?;
@@ -181,20 +219,45 @@ impl Session {
             events,
             closing: false,
             buffer_ms: DEFAULT_BUFFER_MS,
+            room_size: room,
+            source_size: source,
             transmit,
+            sent_any: false,
+            decoder,
+            lost: Vec::new(),
         })
     }
 
-    /// Change the transmit size. Only possible before the first partner joins (nothing
-    /// has been encoded yet) — e.g. when joining, once the room's settings arrive.
-    pub fn set_transmit_size(&mut self, transmit: (u32, u32)) -> Result<(), Error> {
-        if transmit == self.transmit || !self.partners.is_empty() {
+    /// Change the room's video size. Only possible before anything has been sent
+    /// (e.g. when joining, once the room's settings arrive).
+    pub fn set_transmit_size(&mut self, room: (u32, u32)) -> Result<(), Error> {
+        if self.sent_any {
+            return Ok(());
+        }
+        self.room_size = room;
+        self.refit()
+    }
+
+    /// Work out the send size again (room size or source size changed). Only before
+    /// the first frame is sent: after that, partners' decoders expect a fixed size.
+    fn refit(&mut self) -> Result<(), Error> {
+        let transmit = fit_transmit(self.room_size, self.source_size);
+        if self.sent_any || transmit == self.transmit {
             return Ok(());
         }
         self.send_info = packed_video_info(transmit)?;
         self.appsrc.set_caps(Some(&self.send_info.to_caps()?));
         self.transmit = transmit;
+        if !self.partners.is_empty() {
+            self.update_bitrate();
+        }
         Ok(())
+    }
+
+    /// Partners whose video stopped arriving (see `PARTNER_TIMEOUT`). The caller
+    /// removes them; each is reported once.
+    pub fn take_lost_partners(&mut self) -> Vec<PeerId> {
+        std::mem::take(&mut self.lost)
     }
 
     /// Set the receive buffer (clamped to 20–500 ms), for current and future partners.
@@ -244,7 +307,16 @@ impl Session {
         let (frame_tx, frame_rx) = mpsc::sync_channel::<Frame>(2);
         let received = Arc::new(AtomicU64::new(0));
         let recv_bin = Arc::new(Mutex::new(None));
-        attach_receiver(&self.pipeline, &webrtc, id, frame_tx, received.clone(), recv_bin.clone(), self.events.clone());
+        attach_receiver(
+            &self.pipeline,
+            &webrtc,
+            id,
+            &self.decoder,
+            frame_tx,
+            received.clone(),
+            recv_bin.clone(),
+            self.events.clone(),
+        );
 
         let name = Arc::new(Mutex::new(name.to_string()));
         let spout_stop = Arc::new(AtomicBool::new(false));
@@ -253,6 +325,7 @@ impl Session {
             frame_rx,
             name.clone(),
             spout_stop.clone(),
+            self.room_size,
             self.group_layers.clone(),
             self.events.clone(),
         );
@@ -286,6 +359,8 @@ impl Session {
                 requests_at_last_report: 0,
                 spout_stop,
                 spout_thread: Some(spout_thread),
+                added_at: Instant::now(),
+                last_video_at: None,
             },
         );
         self.update_bitrate();
@@ -416,6 +491,12 @@ impl Session {
             tick(self)?;
             self.sync_group_source();
 
+            // Until the first frame goes out, the send size follows the avatar's size.
+            if !self.sent_any && (packer.source_width, packer.source_height) != self.source_size {
+                self.source_size = (packer.source_width, packer.source_height);
+                self.refit()?;
+            }
+
             // Reopen the avatar if the VTubing app restarted or changed its size (it's
             // scaled to the transmit size, so any size is fine), or if the transmit
             // size changed (joining: the room's settings arrived).
@@ -449,6 +530,7 @@ impl Session {
                     b.set_duration(gst::ClockTime::from_nseconds(frame_ns));
                 }
                 self.appsrc.push_buffer(buffer)?;
+                self.sent_any = true;
                 sent += 1;
             }
 
@@ -458,6 +540,16 @@ impl Session {
                 let mut received = Vec::new();
                 for (id, p) in self.partners.iter_mut() {
                     let now = p.received.load(Ordering::Relaxed);
+                    if now > p.received_at_last_report {
+                        p.last_video_at = Some(Instant::now());
+                    }
+                    let quiet = match p.last_video_at {
+                        Some(t) => t.elapsed() > PARTNER_TIMEOUT,
+                        None => p.added_at.elapsed() > FIRST_VIDEO_TIMEOUT,
+                    };
+                    if quiet && !self.lost.contains(id) {
+                        self.lost.push(id.clone());
+                    }
                     let net = network_numbers(p);
                     received.push(PartnerStats {
                         id: id.clone(),
@@ -622,10 +714,12 @@ struct NetNumbers {
 }
 
 /// When a partner's video stream appears, attach: depacketiser → decoder → appsink.
+#[allow(clippy::too_many_arguments)]
 fn attach_receiver(
     pipeline: &gst::Pipeline,
     webrtc: &gst::Element,
     peer_id: &str,
+    decoder: &str,
     frame_tx: mpsc::SyncSender<Frame>,
     received: Arc<AtomicU64>,
     recv_bin: Arc<Mutex<Option<gst::Bin>>>,
@@ -633,6 +727,7 @@ fn attach_receiver(
 ) {
     let pipeline_weak = pipeline.downgrade(); // "weak" = doesn't keep the pipeline alive
     let peer_id = peer_id.to_string();
+    let decoder = decoder.to_string();
     webrtc.connect_pad_added(move |_, pad| {
         let Some(pipeline) = pipeline_weak.upgrade() else { return };
         if pad.direction() != gst::PadDirection::Src {
@@ -641,13 +736,8 @@ fn attach_receiver(
         // If video packets go missing (and resending them didn't arrive in time), don't
         // show damaged frames — they smear until the next full frame. Instead skip ahead
         // to the next full frame ("keyframe") and ask the partner to send one right away.
-        //
-        // d3d11h264dec decodes on any graphics card (NVIDIA, AMD or Intel) and hands
-        // us NV12 in normal memory; the GPU unpack shader does the rest.
-        //
-        // TEST ONLY: VTC_DECODER=d3d11h264device1dec picks the decoder on the 2nd graphics
-        // card (e.g. to test an AMD/Intel decoder on a PC whose default card is NVIDIA).
-        let decoder = std::env::var("VTC_DECODER").unwrap_or_else(|_| "d3d11h264dec".into());
+        // The decoder (see `pick_decoder`) hands us NV12 in normal memory; the GPU
+        // unpack shader does the rest.
         let bin = match gst::parse::bin_from_description(
             &format!(
                 "rtph264depay request-keyframe=true wait-for-keyframe=true \
@@ -712,6 +802,7 @@ fn spawn_spout_thread(
     frame_rx: mpsc::Receiver<Frame>,
     name: Arc<Mutex<String>>,
     stop: Arc<AtomicBool>,
+    out_size: (u32, u32),
     layers: GroupLayers,
     events: EventSink,
 ) -> JoinHandle<Result<(), String>> {
@@ -728,11 +819,17 @@ fn spawn_spout_thread(
             if out.is_none() {
                 // Two partners with the same name get "Collab - X" and "Collab - X 2".
                 let source = unused_name(&group::partner_source(&name.lock().unwrap()));
-                let sender = SpoutSender::new(&source, f.w as u32, f.h as u32).map_err(|e| e.to_string())?;
-                let unpacker = Unpacker::new(sender.device(), f.w as u32, f.h as u32).map_err(|e| e.to_string())?;
+                // Always the room's size, even if the partner sent it smaller.
+                let sender = SpoutSender::new(&source, out_size.0, out_size.1).map_err(|e| e.to_string())?;
+                let unpacker =
+                    Unpacker::new(sender.device(), f.w as u32, f.h as u32, out_size).map_err(|e| e.to_string())?;
                 for layer in layers.lock().unwrap().iter_mut().filter(|l| l.id == peer_id) {
                     layer.source = source.clone();
                 }
+                events(Event::Info(format!(
+                    "{source}: {}×{} (received at {}×{})",
+                    out_size.0, out_size.1, f.w, f.h
+                )));
                 events(Event::Publishing { peer: peer_id.clone(), source });
                 out = Some((sender, unpacker));
             }
@@ -743,4 +840,37 @@ fn spawn_spout_thread(
         }
         Ok(())
     })
+}
+
+/// The H.264 decoder on the graphics card our avatar is on, and its description for
+/// the log. GStreamer has one decoder per graphics card: "d3d11h264dec" for Windows'
+/// default card, "d3d11h264device1dec" for the next, and so on. On laptops with two
+/// cards the default is often the weak built-in one, which can't keep up with
+/// several partners at once.
+///
+/// TEST ONLY: VTC_DECODER=d3d11h264device1dec forces a decoder (e.g. to test an
+/// AMD/Intel decoder on a PC whose default card is NVIDIA).
+fn pick_decoder() -> (String, String) {
+    let label = |name: &str| {
+        gst::ElementFactory::find(name)
+            .and_then(|f| f.metadata("long-name").map(String::from))
+            .unwrap_or_else(|| name.to_string())
+    };
+    if let Ok(name) = std::env::var("VTC_DECODER") {
+        let l = label(&name);
+        return (name, l);
+    }
+    if let Some(card) = vtc_core::grab::card_id_in_use() {
+        let names = std::iter::once("d3d11h264dec".to_string()).chain((1..8).map(|i| format!("d3d11h264device{i}dec")));
+        for name in names {
+            let Ok(e) = gst::ElementFactory::make(&name).build() else { continue };
+            if e.find_property("adapter-luid").is_some() && e.property::<i64>("adapter-luid") == card {
+                let l = label(&name);
+                return (name, l);
+            }
+        }
+    }
+    let name = "d3d11h264dec".to_string();
+    let l = label(&name);
+    (name, l)
 }

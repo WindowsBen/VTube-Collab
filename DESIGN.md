@@ -213,6 +213,29 @@ Progress:
   group source) is created on that card too. The log says which card. Only a room-server error falls back
   to long codes now; other errors are shown. Compatible with 0.2.0 (nothing sent between people changed).
   Not testable here (one GPU): needs the tester's laptop.
+- ✅ **0.3.0-beta** (2026-11-18), from the first group test's logs:
+  - Decoding happens on the avatar's graphics card (the d3d11 decoder whose adapter LUID matches), not
+    always Windows' default. The two-GPU laptop decoded 3 partners on its Intel chip and got ~18 fps.
+  - No upscaling: video is sent at the room's 16:9 size shrunk to the avatar's own size (e.g. 1266×662 in a
+    1080p room → 1266×712; not below 640 wide). Receivers stretch it back to the room size on the GPU, so
+    OBS sources keep the expected size. Bitrate tier follows the actual pixel count.
+  - Room server link: non-blocking socket (no Windows read timeouts), text "ping" every 20 s answered "pong"
+    by the server without waking it, dead link after 60 s without pong, and the drop reason is logged.
+    A dropped link reconnects by itself and resumes its place (secret from "welcome"); messages missed
+    meanwhile are kept by the server and delivered. Tested: server restart mid-collab, all resumed in ~10 s.
+  - Server: a member whose connection drops without a normal close keeps their place for 45 s before the
+    others hear "member_left"; a leave is immediate. Members are stored, so a restarted room still knows
+    them. Pinging clients silent for 70 s are closed when the room next wakes (join or alarm).
+  - Ghost partners: a partner with no video for 30 s (or none within 60 s of joining) is removed locally,
+    with a warning. Known limit: a PC frozen for 30+ s is dropped by the others and doesn't reconnect its
+    video by itself (rejoining fixes it).
+  - Host can remove people: "Remove" next to each person, "are you sure?" in the row. Server message
+    `remove` (host only) deletes their place (no resume), sends them `removed`, closes their connection and
+    tells everyone else at once. The removed person sees "The host removed you from the room."; they can
+    ask to join again. 0.2.0/0.2.1 clients can be removed too (they see the server connection drop).
+    Test-only: CLI host with `VTC_TEST_REMOVE=<name>` removes that person 10 s after they join.
+  - Works with 0.2.0/0.2.1 clients and with the old server (then no resume, no removing). New server must
+    be deployed.
 
 Code layout: `vtc-core/` (shared: Spout capture/output, GPU pack/unpack, compositor), `collab/` (connection
 engine + CLI), `app/` (window), `handshake/` (Cloudflare room server), `spout-probe/` (test tool: list/grab/watch).

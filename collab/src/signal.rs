@@ -2,10 +2,15 @@
 //!
 //! A background thread keeps a WebSocket open to the room: messages from the room
 //! arrive on `incoming`; messages we `send` go out. The thread also sends a small
-//! "ping" every 25 s so the connection isn't dropped as idle (pings are free).
+//! "ping" every 20 s; the server answers "pong" without waking the room (free). If
+//! no pong comes back for a while, the connection is treated as dead.
+//!
+//! If the connection drops after we're in the room, the thread reconnects by itself
+//! and "resumes" our place (the room gave us a secret for that in "welcome"). Video
+//! between people never goes through the server, so it keeps running meanwhile.
 
 use std::io::ErrorKind;
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
@@ -13,8 +18,10 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use tungstenite::protocol::frame::coding::CloseCode;
+use tungstenite::protocol::CloseFrame;
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{Message, WebSocket};
+use tungstenite::{HandshakeError, Message, WebSocket};
 
 use crate::rooms::{server_url, RoomError};
 
@@ -50,6 +57,9 @@ pub enum FromRoom {
         /// Missing from older servers → defaults.
         #[serde(default)]
         settings: RoomSettings,
+        /// Secret for getting our place back after a dropped connection (newer servers).
+        #[serde(default)]
+        resume: Option<String>,
     },
     Waiting,
     Declined,
@@ -60,9 +70,21 @@ pub enum FromRoom {
     MemberLeft { id: String },
     YouAreHost,
     Signal { from: String, data: String },
-    /// Not from the server: our connection to the room ended.
+    /// We reconnected and got our place back. Anything we missed follows.
+    Resumed {
+        #[serde(default)]
+        host: bool,
+    },
+    /// We reconnected, but the room had already let us go.
+    ResumeFailed,
+    /// The host removed us from the room.
+    Removed,
+    /// Not from the server: the connection dropped; trying to reconnect.
     #[serde(skip)]
-    Disconnected,
+    Reconnecting { why: String },
+    /// Not from the server: our connection to the room ended for good.
+    #[serde(skip)]
+    Disconnected { why: String },
 }
 
 /// Messages to the room.
@@ -71,6 +93,8 @@ pub enum FromRoom {
 pub enum ToRoom {
     Approve { id: String },
     Decline { id: String },
+    /// Host only: take someone out of the room.
+    Remove { id: String },
     Signal { to: String, data: String },
 }
 
@@ -99,59 +123,31 @@ pub fn create_room(settings: RoomSettings) -> Result<(String, String), RoomError
     Ok((created.code, created.token))
 }
 
+type Socket = WebSocket<MaybeTlsStream<TcpStream>>;
+
+/// How often we ping, and how long without a pong before the connection counts as dead.
+const PING_EVERY: Duration = Duration::from_secs(20);
+const PONG_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long to keep trying to reconnect. The server keeps our place for 45 s.
+const RECONNECT_FOR: Duration = Duration::from_secs(40);
+
 impl RoomLink {
     /// Connect to room `code` as `name`. The host passes its `token`.
     pub fn connect(code: &str, name: &str, token: Option<&str>) -> Result<RoomLink, RoomError> {
         let base = server_url().ok_or_else(|| RoomError::Unavailable("no room server set up".into()))?;
         let ws_base = base.trim_end_matches('/').replacen("https://", "wss://", 1).replacen("http://", "ws://", 1);
-        let mut url = format!("{ws_base}/v2/rooms/{code}/ws?name={}", url_encode(name));
+        // v=3: we ping and can resume (the server only expects pings from such clients).
+        let mut url = format!("{ws_base}/v2/rooms/{code}/ws?v=3&name={}", url_encode(name));
         if let Some(t) = token {
             url.push_str(&format!("&token={}", url_encode(t)));
         }
-
-        let (mut socket, _) = tungstenite::connect(url.as_str()).map_err(|e| match e {
-            tungstenite::Error::Http(r) if r.status().as_u16() == 404 => RoomError::NotFound,
-            other => RoomError::Unavailable(other.to_string()),
-        })?;
-        // Short read timeout, so the thread can also send while waiting for messages.
-        set_read_timeout(&mut socket, Duration::from_millis(50));
+        let socket = open(&url)?;
 
         let (in_tx, incoming) = mpsc::channel();
         let (outgoing, out_rx) = mpsc::channel::<ToRoom>();
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
-        let thread = std::thread::spawn(move || {
-            let mut last_ping = Instant::now();
-            loop {
-                if thread_stop.load(Ordering::Relaxed) {
-                    let _ = socket.close(None);
-                    let _ = socket.flush();
-                    return;
-                }
-                match socket.read() {
-                    Ok(Message::Text(text)) => {
-                        if let Ok(msg) = serde_json::from_str::<FromRoom>(text.as_str()) {
-                            let _ = in_tx.send(msg);
-                        }
-                    }
-                    Ok(Message::Close(_)) => break,
-                    Ok(_) => {} // pongs etc.
-                    Err(tungstenite::Error::Io(e)) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
-                    Err(_) => break,
-                }
-                while let Ok(msg) = out_rx.try_recv() {
-                    let json = serde_json::to_string(&msg).expect("ToRoom converts to JSON");
-                    if socket.send(Message::text(json)).is_err() {
-                        break;
-                    }
-                }
-                if last_ping.elapsed() > Duration::from_secs(25) {
-                    let _ = socket.send(Message::Ping(Default::default()));
-                    last_ping = Instant::now();
-                }
-            }
-            let _ = in_tx.send(FromRoom::Disconnected);
-        });
+        let thread = std::thread::spawn(move || run_link(socket, url, in_tx, out_rx, thread_stop));
 
         Ok(RoomLink { incoming, outgoing, stop, thread: Some(thread) })
     }
@@ -175,13 +171,190 @@ impl Drop for RoomLink {
     }
 }
 
-fn set_read_timeout(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, timeout: Duration) {
+/// The link thread: pass messages both ways, ping, and reconnect when needed.
+fn run_link(first: Socket, url: String, in_tx: Sender<FromRoom>, out_rx: Receiver<ToRoom>, stop: Arc<AtomicBool>) {
+    let mut socket = Some(first);
+    // "id.secret", once the room has let us in.
+    let mut resume: Option<String> = None;
+    // Messages not sent yet (kept across a reconnect).
+    let mut pending: std::collections::VecDeque<String> = Default::default();
+    let mut last_ping = Instant::now();
+    let mut last_pong = Instant::now();
+    // Only an up-to-date server answers pings; until we've seen one pong, don't expect them.
+    let mut pong_seen = false;
+    // While reconnecting: since when, and when to try next.
+    let mut down_since = Instant::now();
+    let mut next_try = Instant::now();
+    let mut attempt = 0u32;
+    let mut why = String::new();
+
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            if let Some(ws) = socket.as_mut() {
+                say_goodbye(ws);
+            }
+            return;
+        }
+
+        let Some(ws) = socket.as_mut() else {
+            // ---- reconnecting ----
+            if down_since.elapsed() > RECONNECT_FOR {
+                let _ = in_tx.send(FromRoom::Disconnected { why });
+                return;
+            }
+            if Instant::now() >= next_try {
+                let resume_url = format!("{url}&resume={}", resume.as_deref().map(url_encode).unwrap_or_default());
+                match open(&resume_url) {
+                    Ok(ws) => {
+                        crate::log::info("Room server: reconnected, resuming our place");
+                        socket = Some(ws);
+                        (last_ping, last_pong) = (Instant::now(), Instant::now());
+                    }
+                    Err(e) => {
+                        crate::log::info(&format!("Room server: reconnect attempt failed: {e}"));
+                        attempt += 1;
+                        next_try = Instant::now() + Duration::from_secs([1, 2, 3, 5][attempt.min(3) as usize]);
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            continue;
+        };
+
+        // ---- connected ----
+        let mut busy = false;
+        let mut failed: Option<String> = None;
+
+        // Read everything that has arrived.
+        loop {
+            match ws.read() {
+                Ok(Message::Text(text)) => {
+                    busy = true;
+                    if text.as_str() == "pong" {
+                        (last_pong, pong_seen) = (Instant::now(), true);
+                        continue;
+                    }
+                    let Ok(msg) = serde_json::from_str::<FromRoom>(text.as_str()) else { continue };
+                    match &msg {
+                        FromRoom::Welcome { you, resume: Some(secret), .. } => resume = Some(format!("{you}.{secret}")),
+                        // No reconnecting after these: our place is gone.
+                        FromRoom::ResumeFailed | FromRoom::Removed => resume = None,
+                        _ => {}
+                    }
+                    let _ = in_tx.send(msg);
+                }
+                Ok(Message::Close(frame)) => {
+                    let reason = frame.map(|f| f.reason.to_string()).filter(|r| !r.is_empty());
+                    failed = Some(format!("the server closed the connection ({})", reason.as_deref().unwrap_or("no reason given")));
+                    break;
+                }
+                Ok(_) => busy = true, // protocol pings/pongs
+                Err(tungstenite::Error::Io(e)) if e.kind() == ErrorKind::WouldBlock => break,
+                Err(e) => {
+                    failed = Some(e.to_string());
+                    break;
+                }
+            }
+        }
+
+        // Send what's waiting. A message stays in `pending` until it's handed over.
+        if failed.is_none() {
+            while let Ok(msg) = out_rx.try_recv() {
+                pending.push_back(serde_json::to_string(&msg).expect("ToRoom converts to JSON"));
+            }
+            if last_ping.elapsed() > PING_EVERY {
+                last_ping = Instant::now();
+                pending.push_front("ping".into());
+            }
+            while let Some(text) = pending.front() {
+                match ws.send(Message::text(text.clone())) {
+                    // WouldBlock = queued; it goes out with the next flush.
+                    Ok(()) => {}
+                    Err(tungstenite::Error::Io(e)) if e.kind() == ErrorKind::WouldBlock => {}
+                    Err(e) => {
+                        failed = Some(e.to_string());
+                        break;
+                    }
+                }
+                pending.pop_front();
+                busy = true;
+            }
+            pending.retain(|t| t != "ping"); // a stale ping is pointless after a reconnect
+        }
+        if failed.is_none() {
+            match ws.flush() {
+                Ok(()) => {}
+                Err(tungstenite::Error::Io(e)) if e.kind() == ErrorKind::WouldBlock => {}
+                Err(e) => failed = Some(e.to_string()),
+            }
+        }
+        if failed.is_none() && pong_seen && last_pong.elapsed() > PONG_TIMEOUT {
+            failed = Some("no answer from the server for 60 s".into());
+        }
+
+        if let Some(reason) = failed {
+            socket = None;
+            if resume.is_some() {
+                crate::log::warning(&format!("Room server connection dropped: {reason}"));
+                let _ = in_tx.send(FromRoom::Reconnecting { why: reason.clone() });
+                why = reason;
+                (down_since, next_try, attempt) = (Instant::now(), Instant::now() + Duration::from_secs(1), 0);
+                continue;
+            }
+            let _ = in_tx.send(FromRoom::Disconnected { why: reason });
+            return;
+        }
+        if !busy {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+/// Leaving: tell the room on purpose ("normal" close), so it says goodbye to the
+/// others at once instead of keeping our place for a reconnect.
+fn say_goodbye(ws: &mut Socket) {
+    let _ = ws.close(Some(CloseFrame { code: CloseCode::Normal, reason: "leave".into() }));
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < deadline {
+        match ws.flush() {
+            Err(tungstenite::Error::Io(e)) if e.kind() == ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(10))
+            }
+            _ => return,
+        }
+    }
+}
+
+/// Open a WebSocket to `url` (giving up on unreachable servers after 5 s), then
+/// switch it to "non-blocking": reads return at once when nothing has arrived, so
+/// one thread can both listen and send.
+fn open(url: &str) -> Result<Socket, RoomError> {
+    let unavailable = |e: &dyn std::fmt::Display| RoomError::Unavailable(e.to_string());
+    let uri: tungstenite::http::Uri = url.parse().map_err(|e| unavailable(&e))?;
+    let host = uri.host().ok_or_else(|| RoomError::Unavailable("bad server address".into()))?;
+    let port = uri.port_u16().unwrap_or(if uri.scheme_str() == Some("wss") { 443 } else { 80 });
+    let addrs: Vec<_> = (host, port).to_socket_addrs().map_err(|e| unavailable(&e))?.collect();
+    let tcp = addrs
+        .iter()
+        .find_map(|a| TcpStream::connect_timeout(a, Duration::from_secs(5)).ok())
+        .ok_or_else(|| RoomError::Unavailable("couldn't reach the room server".into()))?;
+    // While connecting, wait at most 10 s for each answer.
+    let _ = tcp.set_read_timeout(Some(Duration::from_secs(10)));
+    let _ = tcp.set_nodelay(true);
+
+    let (mut socket, _) = tungstenite::client_tls(url, tcp).map_err(|e| match e {
+        HandshakeError::Failure(tungstenite::Error::Http(r)) if r.status().as_u16() == 404 => RoomError::NotFound,
+        HandshakeError::Failure(other) => unavailable(&other),
+        HandshakeError::Interrupted(_) => RoomError::Unavailable("connection interrupted".into()),
+    })?;
     let tcp = match socket.get_mut() {
         MaybeTlsStream::Plain(s) => s,
         MaybeTlsStream::Rustls(s) => &mut s.sock,
-        _ => return,
+        _ => return Err(RoomError::Other("unexpected connection type".into())),
     };
-    let _ = tcp.set_read_timeout(Some(timeout));
+    tcp.set_read_timeout(None).map_err(|e| unavailable(&e))?;
+    tcp.set_nonblocking(true).map_err(|e| unavailable(&e))?;
+    Ok(socket)
 }
 
 /// Make text safe to put in a web address ("Ben & Co" → "Ben%20%26%20Co").

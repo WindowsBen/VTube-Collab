@@ -22,7 +22,7 @@ cbuffer Params : register(b0)
 {
     uint avatarWidth;  // transmit width (half the packed width)
     uint avatarHeight; // transmit height
-    uint srcWidth;     // the VTubing app's image size (pack only)
+    uint srcWidth;     // pack: the VTubing app's image size; unpack: the output size
     uint srcHeight;
     float4 fit;        // where the source lands in the transmit frame: x, y, width, height (pixels)
 };
@@ -100,10 +100,11 @@ float2 PSPackChroma(float4 pos : SV_Position) : SV_Target
 Texture2D<float>  lumaPlane   : register(t0); // decoded Y plane
 Texture2D<float2> chromaPlane : register(t1); // decoded UV plane
 
-// Writes the avatar (avatar width × height), RGBA with transparency.
-float4 PSUnpack(float4 pos : SV_Position) : SV_Target
+// The received avatar at pixel `p`, premultiplied (colour × alpha), so blending
+// neighbours when stretching doesn't darken the edges.
+float4 unpackAt(int2 p)
 {
-    int2 p = int2(pos.xy);
+    p = clamp(p, int2(0, 0), int2(avatarWidth, avatarHeight) - 1);
     float  y = (lumaPlane.Load(int3(p, 0)) * 255.0 - 16.0) / 219.0;
     float2 c = (chromaPlane.Load(int3(p / 2, 0)) * 255.0 - 128.0) / 224.0; // (Cb, Cr)
     float3 rgb = float3(y + 1.5748 * c.y,
@@ -115,7 +116,22 @@ float4 PSUnpack(float4 pos : SV_Position) : SV_Target
     // see-through stays exactly 0 and solid stays exactly 255 (no faint haze).
     if (a <= 2.0 / 255.0) a = 0.0;
     if (a >= 253.0 / 255.0) a = 1.0;
-    return float4(saturate(rgb), a);
+    return float4(saturate(rgb) * a, a);
+}
+
+// Writes the avatar at the output size (srcWidth × srcHeight here), RGBA with
+// transparency. If the partner sent it smaller, it's stretched back up, blending
+// the 4 nearest received pixels. At equal sizes this is an exact 1:1 copy.
+float4 PSUnpack(float4 pos : SV_Position) : SV_Target
+{
+    float2 s = pos.xy * float2(avatarWidth, avatarHeight) / float2(srcWidth, srcHeight) - 0.5;
+    int2 i0 = int2(floor(s));
+    float2 f = s - floor(s);
+    float4 acc = (1.0 - f.x) * (1.0 - f.y) * unpackAt(i0)
+               + f.x * (1.0 - f.y)         * unpackAt(i0 + int2(1, 0))
+               + (1.0 - f.x) * f.y         * unpackAt(i0 + int2(0, 1))
+               + f.x * f.y                 * unpackAt(i0 + int2(1, 1));
+    return acc.a > 0.0 ? float4(saturate(acc.rgb / acc.a), acc.a) : float4(0, 0, 0, 0);
 }
 
 // ================= GROUP SOURCE (compositor) =================

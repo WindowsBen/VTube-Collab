@@ -1,6 +1,6 @@
 [package]
 name = "vtc-core"
-version = "0.2.1-beta"
+version = "0.3.0-beta"
 edition = "2024"
 description = "Shared code for VTube Collab: Spout2 capture/output and alpha packing"
 

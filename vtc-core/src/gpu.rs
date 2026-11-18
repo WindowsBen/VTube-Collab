@@ -312,7 +312,8 @@ mod tests {
 // ---------------- Unpacker (receiver side) ----------------
 
 /// Uploads a decoded packed NV12 frame and draws the transparent avatar into a
-/// render target (normally a Spout sender's texture), on the GPU.
+/// render target (normally a Spout sender's texture), on the GPU. The avatar is
+/// stretched to the target's size if a partner sent it smaller.
 pub struct Unpacker {
     vs: ID3D11VertexShader,
     ps: ID3D11PixelShader,
@@ -320,26 +321,31 @@ pub struct Unpacker {
     luma: ID3D11Texture2D,
     chroma: ID3D11Texture2D,
     inputs: [Option<ID3D11ShaderResourceView>; 2],
-    /// Avatar size (the packed frame is twice as wide).
+    /// Avatar size as received (the packed frame is twice as wide).
     pub width: u32,
     pub height: u32,
+    /// Size it's drawn at (the render target's size).
+    pub out: (u32, u32),
 }
 
 impl Unpacker {
     /// Must use the same `device` as the render target it will draw into.
-    pub fn new(device: &ID3D11Device, width: u32, height: u32) -> Result<Unpacker> {
+    /// `width`×`height` = received avatar size; `out` = render target size.
+    pub fn new(device: &ID3D11Device, width: u32, height: u32, out: (u32, u32)) -> Result<Unpacker> {
         let sr = D3D11_BIND_SHADER_RESOURCE.0 as u32;
         let luma = texture(device, width * 2, height, DXGI_FORMAT_R8_UNORM, sr, false)?;
         let chroma = texture(device, width, height / 2, DXGI_FORMAT_R8G8_UNORM, sr, false)?;
         Ok(Unpacker {
             vs: vertex_shader(device)?,
             ps: pixel_shader(device, s!("PSUnpack"))?,
-            params: params_buffer(device, (width, height), (0, 0), [0.0; 4])?,
+            // For unpacking, the "source size" slots carry the output size.
+            params: params_buffer(device, (width, height), out, [0.0; 4])?,
             inputs: [Some(srv(device, &luma)?), Some(srv(device, &chroma)?)],
             luma,
             chroma,
             width,
             height,
+            out,
         })
     }
 
@@ -361,7 +367,7 @@ impl Unpacker {
             ctx.UpdateSubresource(&self.luma, 0, None, y.as_ptr() as *const c_void, y_stride as u32, 0);
             ctx.UpdateSubresource(&self.chroma, 0, None, uv.as_ptr() as *const c_void, uv_stride as u32, 0);
         }
-        draw(ctx, &self.vs, &self.ps, &self.params, &self.inputs, target, self.width, self.height);
+        draw(ctx, &self.vs, &self.ps, &self.params, &self.inputs, target, self.out.0, self.out.1);
         Ok(())
     }
 }

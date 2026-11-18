@@ -126,6 +126,8 @@ pub struct App {
     /// The room's settings, once we're in.
     pub room_settings: Option<RoomSettings>,
     server_lost: bool,
+    /// Host: the person whose Remove button was clicked (waiting for "are you sure?").
+    pub confirm_remove: Option<String>,
     copied_at: Option<Instant>,
     setup_error: Option<String>,
     // Window chrome.
@@ -166,6 +168,7 @@ impl App {
             group_enabled: None,
             room_settings: None,
             server_lost: false,
+            confirm_remove: None,
             copied_at: None,
             setup_error: None,
             open_menu: None,
@@ -200,6 +203,7 @@ impl App {
         self.group_enabled = None;
         self.room_settings = None;
         self.server_lost = false;
+        self.confirm_remove = None;
     }
 
     fn refresh_sources(&mut self) {
@@ -285,7 +289,13 @@ impl App {
                         self.status = "Couldn't join.".into();
                         return;
                     }
-                    self.setup_error = error.as_ref().map(|e| format!("Stopped: {e}"));
+                    self.setup_error = error.as_ref().map(|e| {
+                        if e == collab::room::REMOVED {
+                            "The host removed you from the room.".to_string()
+                        } else {
+                            format!("Stopped: {e}")
+                        }
+                    });
                     self.reset(self.setup_error.clone().unwrap_or_else(|| "Collab ended.".into()));
                     return;
                 }
@@ -363,6 +373,8 @@ impl App {
             }
             RoomEvent::JoinRequest { id, name } => {
                 self.status = format!("{name} wants to join.");
+                // After a reconnect the room sends waiting requests again.
+                self.requests.retain(|(r, _)| *r != id);
                 self.requests.push((id, name));
             }
             RoomEvent::JoinCancelled { id } => self.requests.retain(|(r, _)| *r != id),
@@ -380,6 +392,16 @@ impl App {
                     *host = true;
                 }
                 self.status = "The host left — you're the host now.".into();
+            }
+            RoomEvent::ServerReconnecting => {
+                self.status = "Room server connection dropped. Reconnecting (everyone stays connected)...".into();
+            }
+            RoomEvent::ServerBack { host: is_host } => {
+                self.server_lost = false;
+                if let Screen::Room { host, .. } = &mut self.screen {
+                    *host = is_host;
+                }
+                self.status = "Reconnected to the room server.".into();
             }
             RoomEvent::ServerLost => {
                 self.server_lost = true;
@@ -666,7 +688,7 @@ impl App {
             for d in decisions {
                 let id = match &d {
                     ToWorker::Approve(id) | ToWorker::Decline(id) => id.clone(),
-                    ToWorker::Reply(_) => continue,
+                    ToWorker::Remove(_) | ToWorker::Reply(_) => continue,
                 };
                 self.requests.retain(|(r, _)| *r != id);
                 if let Some(w) = &self.worker {
@@ -676,11 +698,35 @@ impl App {
         }
 
         // ---- People ----
+        // The host can remove people (rooms only). Asks "are you sure?" in the row first.
+        let can_remove = host && !long_codes;
+        let mut remove_clicked: Option<String> = None;
+        let mut remove_confirmed: Option<String> = None;
+        let mut remove_cancelled = false;
         xp::group(ui, &format!("People ({} with you)", self.members.len() + 1), |ui| {
             if self.members.is_empty() {
                 xp::hint(ui, "Nobody else here yet.");
             }
             for m in &self.members {
+                if can_remove && self.confirm_remove.as_deref() == Some(m.id.as_str()) {
+                    ui.horizontal(|ui| {
+                        xp::status_dot(ui, colour::ERROR);
+                        ui.label(RichText::new(format!("Remove {} from the room?", m.name)).font(theme::bold(12.0)));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if xp::button(ui, "Cancel", true, false).clicked() {
+                                remove_cancelled = true;
+                            }
+                            if xp::button(ui, "Remove", true, true).clicked() {
+                                remove_confirmed = Some(m.id.clone());
+                            }
+                        });
+                    });
+                    ui.horizontal(|ui| {
+                        ui.add_space(18.0);
+                        xp::hint(ui, "They can ask to join again; you decide whether to let them back in.");
+                    });
+                    continue;
+                }
                 ui.horizontal(|ui| {
                     let (dot, state) = match m.state {
                         Some(ConnState::Connected) => (colour::OK, "connected"),
@@ -692,11 +738,14 @@ impl App {
                     xp::status_dot(ui, dot);
                     ui.label(RichText::new(&m.name).font(theme::bold(12.0)));
                     ui.label(RichText::new(state).color(colour::TEXT_HINT));
-                    if let Some(f) = m.fps {
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if can_remove && xp::button(ui, "Remove", true, false).clicked() {
+                            remove_clicked = Some(m.id.clone());
+                        }
+                        if let Some(f) = m.fps {
                             ui.label(format!("{f:.0} fps"));
-                        });
-                    }
+                        }
+                    });
                 });
                 let source = m.source.clone().unwrap_or_else(|| collab::group::partner_source(&m.name));
                 let mut details = vec![format!("OBS source: {source}")];
@@ -728,6 +777,22 @@ impl App {
                 );
             }
         });
+
+        if let Some(id) = remove_clicked {
+            self.confirm_remove = Some(id);
+        }
+        if remove_cancelled {
+            self.confirm_remove = None;
+        }
+        if let Some(id) = remove_confirmed {
+            self.confirm_remove = None;
+            if let Some(m) = self.members.iter().find(|m| m.id == id) {
+                self.status = format!("Removed {}.", m.name);
+            }
+            if let Some(w) = &self.worker {
+                w.send(ToWorker::Remove(id));
+            }
+        }
 
         self.layers_panel(ui);
 
