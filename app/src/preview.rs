@@ -1,7 +1,7 @@
 //! TEST ONLY — preview mode for screenshots: `VTC_PREVIEW=<screen>` opens a screen
 //! filled with sample people and stats, without connecting to anything.
 //!
-//!   setup, settings, join, waiting, room, guest, long, about, howto, menu
+//!   setup, settings, join, waiting, room, guest, long, about, howto, menu, error
 //!   — add "+about" or "+howto" to open that dialog on top, e.g. "setup+howto".
 
 use std::sync::{Arc, Mutex};
@@ -50,6 +50,15 @@ fn apply_screen(app: &mut App, which: &str) {
             app.status = "Room codes unavailable; using long codes.".into();
         }
         "menu" => app.open_menu = Some(crate::Menu::Help),
+        "error" => {
+            // The avatar is on another graphics card than any we can use.
+            let e = "Stopped: Couldn't open your avatar: its image can't be read on any graphics card. \
+                     If this PC has two graphics cards, set your VTubing app, OBS and VTube Collab to \
+                     \"High performance\" in Windows Settings > System > Display > Graphics, then \
+                     restart them.";
+            app.setup_error = Some(e.into());
+            app.status = e.into();
+        }
         "room" | "guest" | "about" | "howto" => {
             let host = which != "guest";
             app.screen = Screen::Room { code: Some("MINTY-OTTER-42".into()), host, long_codes: false };

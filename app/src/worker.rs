@@ -72,10 +72,13 @@ impl Worker {
                     (c.send)(FromWorker::Group(room.group_layers(), room.group_enabled()));
                     room.run(c.stop, forward_commands(c.inbox))
                 }
-                Err(e) => {
+                // Only a room server problem falls back to long codes. Anything else
+                // (e.g. the avatar can't be opened) would fail there too: show it.
+                Err(e) if e.downcast_ref::<collab::rooms::RoomError>().is_some() => {
                     (c.send)(FromWorker::RoomUnavailable(e.to_string()));
                     host_long_codes(&source, &name, c)
                 }
+                Err(e) => Err(e),
             }
         })
     }

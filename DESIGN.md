@@ -207,6 +207,12 @@ Progress:
   - Encoder paths verified at 60 fps with a correct picture: NVIDIA, AMD (`amfh264enc`), Windows
     (`mfh264enc`); AMD-style decoder via test-only `VTC_DECODER`. Intel Quick Sync not testable here.
   - One short readme + tester guide `docs/README.txt` (bundled as README.txt); zip named `VTubeCollab-<version>.zip`.
+- ✅ **0.2.1-beta** (2026-11-18): laptops with two graphics cards (tester: Intel UHD 630 + GTX 1650) failed to
+  host with "The parameter is incorrect": the avatar was on the NVIDIA card, we opened it on the default
+  (Intel) card. Now the avatar is opened on whichever card it lives on, and everything else (partner outputs,
+  group source) is created on that card too. The log says which card. Only a room-server error falls back
+  to long codes now; other errors are shown. Compatible with 0.2.0 (nothing sent between people changed).
+  Not testable here (one GPU): needs the tester's laptop.
 
 Code layout: `vtc-core/` (shared: Spout capture/output, GPU pack/unpack, compositor), `collab/` (connection
 engine + CLI), `app/` (window), `handshake/` (Cloudflare room server), `spout-probe/` (test tool: list/grab/watch).

@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.2.0-beta"
+version = "0.2.1-beta"
 edition = "2024"
 
 # The program is called VTubeCollab.exe.

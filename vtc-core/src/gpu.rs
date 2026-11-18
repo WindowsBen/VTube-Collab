@@ -9,13 +9,13 @@
 use std::ffi::c_void;
 
 use windows::core::{PCSTR, Result, s};
-use windows::Win32::Foundation::{E_FAIL, E_NOTIMPL, HANDLE};
+use windows::Win32::Foundation::{E_FAIL, E_NOTIMPL};
 use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
 use windows::Win32::Graphics::Direct3D::{D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, ID3DBlob};
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 
-use crate::grab::create_device;
+use crate::grab::open_shared;
 use crate::spout::SharedTextureInfo;
 
 /// The shader source is built into our program at compile time.
@@ -201,12 +201,8 @@ impl Packer {
     /// rounded down to even numbers). The source is scaled to fit, keeping its shape,
     /// centred and resting on the bottom edge; any leftover space is see-through.
     pub fn open(info: &SharedTextureInfo, transmit: (u32, u32)) -> Result<Packer> {
-        let (device, context) = create_device()?;
-        let avatar: ID3D11Texture2D = unsafe {
-            let mut tex = None;
-            device.OpenSharedResource(HANDLE(info.share_handle as usize as *mut _), &mut tex)?;
-            tex.unwrap()
-        };
+        // Opens it on whichever graphics card the VTubing app uses (laptops may have two).
+        let (device, context, avatar) = open_shared(info.share_handle)?;
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         unsafe { avatar.GetDesc(&mut desc) };
         let (sw, sh) = (desc.Width.max(1), desc.Height.max(1));

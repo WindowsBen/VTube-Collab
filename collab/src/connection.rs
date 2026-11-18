@@ -108,7 +108,9 @@ pub(crate) fn open_avatar(sender_name: &str, transmit: (u32, u32)) -> Result<Pac
     let info = spout::read_sender_info(sender_name).ok_or_else(|| {
         format!("No Spout2 source called \"{sender_name}\". Is your VTubing app running with Spout2 output on?")
     })?;
-    Ok(Packer::open(&info, transmit)?)
+    let packer = Packer::open(&info, transmit).map_err(|e| format!("Couldn't open your avatar: {}", e.message()))?;
+    crate::log::info(&format!("Avatar opened on graphics card: {}", vtc_core::grab::card_in_use()));
+    Ok(packer)
 }
 
 /// Two-person (long-code) collabs always send full 1080p.
