@@ -23,6 +23,8 @@ pub enum ToWorker {
     Decline(PeerId),
     /// Host: take someone out of the room.
     Remove(PeerId),
+    /// Host: change everyone's receive buffer (ms).
+    SetBuffer(u32),
     /// Long-code host: the partner's reply code, as pasted.
     Reply(String),
 }
@@ -180,6 +182,10 @@ fn forward_commands(inbox: Receiver<ToWorker>) -> Receiver<RoomCommand> {
                 ToWorker::Remove(id) => {
                     collab::log::info(&format!("Host removed {id}"));
                     RoomCommand::Remove(id)
+                }
+                ToWorker::SetBuffer(ms) => {
+                    collab::log::info(&format!("Host set the receive buffer to {ms} ms"));
+                    RoomCommand::SetBuffer(ms)
                 }
                 ToWorker::Reply(_) => continue,
             };

@@ -46,6 +46,23 @@ impl Default for RoomSettings {
     }
 }
 
+/// Logins for the relay server (TURN), used only when two PCs can't connect
+/// directly. Handed out by the room server, valid for at least a day.
+#[derive(Deserialize, Clone, PartialEq)]
+pub struct RelayLogins {
+    /// e.g. "turn:turn.cloudflare.com:3478?transport=udp", "turns:...:443?transport=tcp"
+    pub urls: Vec<String>,
+    pub username: String,
+    pub credential: String,
+}
+
+impl std::fmt::Debug for RelayLogins {
+    /// Never print the login itself (it could end up in a log someone shares).
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "RelayLogins({} servers)", self.urls.len())
+    }
+}
+
 /// Messages from the room. `#[serde(tag = "type")]` maps {"type":"member_left",...} to `MemberLeft`.
 #[derive(Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -60,7 +77,12 @@ pub enum FromRoom {
         /// Secret for getting our place back after a dropped connection (newer servers).
         #[serde(default)]
         resume: Option<String>,
+        /// Relay logins, if the room server has a relay set up.
+        #[serde(default)]
+        ice: Option<RelayLogins>,
     },
+    /// The host changed the room's settings (e.g. the receive buffer).
+    Settings { settings: RoomSettings },
     Waiting,
     Declined,
     RoomFull,
@@ -95,6 +117,8 @@ pub enum ToRoom {
     Decline { id: String },
     /// Host only: take someone out of the room.
     Remove { id: String },
+    /// Host only: change everyone's receive buffer.
+    SetBuffer { buffer_ms: u32 },
     Signal { to: String, data: String },
 }
 
@@ -115,7 +139,10 @@ pub fn create_room(settings: RoomSettings) -> Result<(String, String), RoomError
     let base = server_url().ok_or_else(|| RoomError::Unavailable("no room server set up".into()))?;
     let url = format!("{}/v2/rooms", base.trim_end_matches('/'));
     let body = serde_json::to_string(&settings).expect("settings convert to JSON");
-    let mut response = ureq::post(&url).send(&body).map_err(|e| RoomError::Unavailable(e.to_string()))?;
+    let mut response = ureq::post(&url).send(&body).map_err(|e| match e {
+        ureq::Error::StatusCode(429) => RoomError::DailyLimit,
+        other => RoomError::Unavailable(other.to_string()),
+    })?;
     let text = response.body_mut().read_to_string().map_err(|e| RoomError::Other(e.to_string()))?;
     // An older room server answers with plain text instead of a new room.
     let created: Created = serde_json::from_str(&text)
@@ -344,6 +371,7 @@ fn open(url: &str) -> Result<Socket, RoomError> {
 
     let (mut socket, _) = tungstenite::client_tls(url, tcp).map_err(|e| match e {
         HandshakeError::Failure(tungstenite::Error::Http(r)) if r.status().as_u16() == 404 => RoomError::NotFound,
+        HandshakeError::Failure(tungstenite::Error::Http(r)) if r.status().as_u16() == 429 => RoomError::DailyLimit,
         HandshakeError::Failure(other) => unavailable(&other),
         HandshakeError::Interrupted(_) => RoomError::Unavailable("connection interrupted".into()),
     })?;

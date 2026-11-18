@@ -12,8 +12,8 @@
 #     bin\                      + GStreamer core DLLs + Microsoft C++ runtime DLLs
 #     lib\gstreamer-1.0\        only the plugins collab uses
 #     libexec\gstreamer-1.0\    gst-plugin-scanner.exe (GStreamer's plugin checker)
-#     licenses\                 GStreamer's licence texts (required by the LGPL)
-#     README.txt                setup + tester guide (from docs\README.txt)
+#     licenses\                 licence texts of the bundled libraries (required by the LGPL)
+#     README.txt                user guide (from docs\README.txt)
 
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path "$PSScriptRoot\..").Path
@@ -101,7 +101,17 @@ while ($queue.Count -gt 0) {
 Copy-Item "$($crt.FullName)\*.dll" "$bundle\bin\"
 
 # ---- Licences and readme ----
-Copy-Item "$gst\share\licenses\*" "$bundle\licenses\" -Recurse
+# Only the licences of what's actually in the bundle (GStreamer's folder has ~90, for
+# every library it ships). If a new plugin pulls in another library, add it here.
+$licences = @(
+    'gstreamer-1.0', 'gst-plugins-base-1.0', 'gst-plugins-bad-1.0', # GStreamer + plugins (LGPL)
+    'glib', 'libffi', 'proxy-libintl', 'pcre2', 'zlib', 'orc',      # GStreamer's helpers
+    'libnice', 'openssl', 'libsrtp'                                  # connections + encryption
+)
+foreach ($l in $licences) {
+    if (-not (Test-Path "$gst\share\licenses\$l")) { throw "licence folder '$l' not found" }
+    Copy-Item "$gst\share\licenses\$l" "$bundle\licenses\" -Recurse
+}
 (Get-Content "$root\docs\README.txt" -Raw).Replace('{VERSION}', $version) | Set-Content "$bundle\README.txt" -Encoding UTF8 -NoNewline
 
 # Double-click starter next to the readme (the .exe must stay in bin\ with its DLLs).

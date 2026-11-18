@@ -7,6 +7,7 @@
 //   POST /v2/rooms  body (optional): {max_people, buffer_ms}
 //                                          → 201 {code, token, settings}   (token = host's secret)
 //   GET  /v2/rooms/<code>/ws?name=..&token=..   WebSocket into the room
+//   429 = the free plan's daily allowance is used up (works again after midnight UTC)
 
 import { roomSettings } from "./room_v2.js";
 export { RoomV2 } from "./room_v2.js"; // rooms for 2–100 people
@@ -47,43 +48,54 @@ function text(body, status = 200) {
 
 export default {
   async fetch(request, env) {
-    const url = new URL(request.url);
-    const parts = url.pathname.split("/").filter(Boolean); // e.g. ["v2", "rooms", "MINTY-OTTER-42", "ws"]
-
-    if (parts[0] !== "v2" || parts[1] !== "rooms") {
-      return text("VTube Collab room server", 200);
+    try {
+      return await handle(request, env);
+    } catch (e) {
+      // On the free plan, Durable Objects stop for the day once their daily allowance is
+      // used up. Answer 429, like Workers' own daily limit, so the app can explain it.
+      if (/exceeded|free tier|limit/i.test(String(e))) return text("daily limit reached", 429);
+      throw e;
     }
-    const room = (code) => env.ROOMS2.get(env.ROOMS2.idFromName(code));
-
-    // Create a room with the host's settings.
-    if (parts.length === 2 && request.method === "POST") {
-      let body = {};
-      try {
-        const raw = await request.text();
-        if (raw.length > 0 && raw.length < 1024) body = JSON.parse(raw);
-      } catch {
-        // Not JSON: use the defaults.
-      }
-      const settings = roomSettings(body);
-      for (let attempt = 0; attempt < 5; attempt++) {
-        const code = newRoomCode();
-        const token = await room(code).create(settings);
-        if (token) {
-          return new Response(JSON.stringify({ code, token, settings }), {
-            status: 201,
-            headers: { "content-type": "application/json" },
-          });
-        }
-      }
-      return text("couldn't find a free room code, try again", 503);
-    }
-
-    // Join a room (WebSocket).
-    if (parts.length === 4 && parts[3] === "ws") {
-      const code = normaliseRoomCode(parts[2]);
-      if (!code) return text("not a room code", 404);
-      return room(code).fetch(request);
-    }
-    return text("not found", 404);
   },
 };
+
+async function handle(request, env) {
+  const url = new URL(request.url);
+  const parts = url.pathname.split("/").filter(Boolean); // e.g. ["v2", "rooms", "MINTY-OTTER-42", "ws"]
+
+  if (parts[0] !== "v2" || parts[1] !== "rooms") {
+    return text("VTube Collab room server", 200);
+  }
+  const room = (code) => env.ROOMS2.get(env.ROOMS2.idFromName(code));
+
+  // Create a room with the host's settings.
+  if (parts.length === 2 && request.method === "POST") {
+    let body = {};
+    try {
+      const raw = await request.text();
+      if (raw.length > 0 && raw.length < 1024) body = JSON.parse(raw);
+    } catch {
+      // Not JSON: use the defaults.
+    }
+    const settings = roomSettings(body);
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const code = newRoomCode();
+      const token = await room(code).create(settings);
+      if (token) {
+        return new Response(JSON.stringify({ code, token, settings }), {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        });
+      }
+    }
+    return text("couldn't find a free room code, try again", 503);
+  }
+
+  // Join a room (WebSocket).
+  if (parts.length === 4 && parts[3] === "ws") {
+    const code = normaliseRoomCode(parts[2]);
+    if (!code) return text("not a room code", 404);
+    return room(code).fetch(request);
+  }
+  return text("not found", 404);
+}

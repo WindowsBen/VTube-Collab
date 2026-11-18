@@ -236,6 +236,26 @@ Progress:
     Test-only: CLI host with `VTC_TEST_REMOVE=<name>` removes that person 10 s after they join.
   - Works with 0.2.0/0.2.1 clients and with the old server (then no resume, no removing). New server must
     be deployed.
+- ✅ **0.4.0-beta** (2026-11-19), first public release:
+  - Relay (TURN) for networks that block direct connections: the room server gets Cloudflare Realtime TURN
+    logins (secrets `TURN_KEY_ID`, `TURN_KEY_API_TOKEN`; 48 h, shared per room, renewed after 24 h) and
+    hands them out in "welcome" (`ice`). The app adds UDP 3478, UDP 443 and TCP 80 to every connection;
+    "turns:" is skipped (libnice has no TLS for relays). Used only when direct fails. Free up to 1,000 GB a
+    month, then $0.05/GB. Test-only: `VTC_RELAY_ONLY=1` forces the relay. STUN is now Cloudflare's.
+  - Daily limit: the server answers 429 when the free plan's allowance is used up (Workers' own limit, or a
+    Durable Object error caught in index.js). The app explains it (works again at midnight UTC, in how long)
+    and offers long codes; other server problems get their own explanation.
+  - Host changes the receive buffer mid-room (slider + Apply under the room code). Server message
+    `set_buffer` (host only) stores it and sends everyone `settings`; running jitter buffers are changed
+    directly. Test-only: CLI host with `VTC_TEST_BUFFER=<ms>` sets it 10 s after someone joins.
+  - Quality follows loss: if partners report ≥ 4% loss of our video in 2 reports running, bitrate × 0.8
+    (down to half); under 1% for 30 s, × 1.15 back up. One encoder, so the worst partner decides.
+  - Update check: at start the app asks GitHub for the latest release and shows "Update available" with a
+    download button. Needs the repo public and each version published as a release (tag `vX.Y.Z-beta`).
+  - README rewritten for the public (install, SmartScreen warning, troubleshooting, reporting problems,
+    privacy). The bundle only carries the licences of the libraries it ships.
+  - Works with older clients and the old server (then no relay and no buffer changes). New server must be
+    deployed.
 
 Code layout: `vtc-core/` (shared: Spout capture/output, GPU pack/unpack, compositor), `collab/` (connection
 engine + CLI), `app/` (window), `handshake/` (Cloudflare room server), `spout-probe/` (test tool: list/grab/watch).

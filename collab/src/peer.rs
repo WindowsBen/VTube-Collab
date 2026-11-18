@@ -20,8 +20,43 @@ use gstreamer_webrtc as gst_webrtc;
 use crate::code::Code;
 use crate::events::{ConnState, Event, EventSink};
 
-/// Public "what's my address?" server. Only sees IP addresses, never video.
-pub const STUN_SERVER: &str = "stun://stun.l.google.com:19302";
+/// Public "what's my address?" server (Cloudflare's, free). Only sees IP addresses, never video.
+pub const STUN_SERVER: &str = "stun://stun.cloudflare.com:3478";
+
+/// Relay logins from the room server → relay addresses in the form webrtcbin wants
+/// ("turn://user:pass@host:port?transport=udp"). Picks three: UDP on the usual port
+/// (fastest), UDP on 443 and TCP on 80 (web ports, for networks that block the rest).
+/// Encrypted "turns:" is skipped: GStreamer's connection library can't do TLS for
+/// relays (the video itself is encrypted anyway). The relay is only used when a
+/// direct connection can't be made.
+pub fn relay_uris(logins: &crate::signal::RelayLogins) -> Vec<String> {
+    let user = url_escape(&logins.username);
+    let pass = url_escape(&logins.credential);
+    let wanted = |u: &&String| {
+        let u = u.as_str();
+        u.starts_with("turn:")
+            && (u.contains(":3478?transport=udp") || u.contains(":443?transport=udp") || u.contains(":80?transport=tcp"))
+    };
+    logins
+        .urls
+        .iter()
+        .filter(wanted)
+        .filter_map(|u| {
+            let (scheme, rest) = u.split_once(':')?; // "turn", "host:port?transport=udp"
+            Some(format!("{scheme}://{user}:{pass}@{rest}"))
+        })
+        .collect()
+}
+
+/// Make text safe inside an address (logins can contain "/", "+", "=", ":").
+fn url_escape(text: &str) -> String {
+    text.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
 
 /// How long to wait for address gathering before using what we have.
 const GATHER_TIMEOUT: Duration = Duration::from_secs(8);
@@ -151,4 +186,36 @@ pub fn watch_bus(pipeline: &gst::Pipeline, events: EventSink) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relay_addresses() {
+        let logins = crate::signal::RelayLogins {
+            urls: [
+                "stun:stun.cloudflare.com:3478",
+                "turn:turn.cloudflare.com:3478?transport=udp",
+                "turn:turn.cloudflare.com:443?transport=udp",
+                "turn:turn.cloudflare.com:3478?transport=tcp",
+                "turn:turn.cloudflare.com:80?transport=tcp",
+                "turns:turn.cloudflare.com:5349?transport=tcp",
+                "turns:turn.cloudflare.com:443?transport=tcp",
+            ]
+            .map(String::from)
+            .to_vec(),
+            username: "abc123".into(),
+            credential: "x/y+z=".into(),
+        };
+        assert_eq!(
+            relay_uris(&logins),
+            [
+                "turn://abc123:x%2Fy%2Bz%3D@turn.cloudflare.com:3478?transport=udp",
+                "turn://abc123:x%2Fy%2Bz%3D@turn.cloudflare.com:443?transport=udp",
+                "turn://abc123:x%2Fy%2Bz%3D@turn.cloudflare.com:80?transport=tcp",
+            ]
+        );
+    }
 }

@@ -12,6 +12,7 @@ pub mod room;
 pub mod rooms;
 mod session;
 pub mod signal;
+pub mod update;
 
 pub use connection::Connection;
 pub use events::{ConnState, Event, EventSink, PartnerStats, PeerId};

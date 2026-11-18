@@ -32,6 +32,8 @@ pub enum RoomCommand {
     Decline(PeerId),
     /// Take someone who's in the room out of it.
     Remove(PeerId),
+    /// Change everyone's receive buffer (ms).
+    SetBuffer(u32),
 }
 
 /// Why the collab ended when the host removed us (the app shows its own wording for it).
@@ -44,6 +46,8 @@ pub enum RoomEvent {
     Waiting,
     /// We're in. `host` = we approve newcomers. `settings` = the room's settings.
     Admitted { host: bool, settings: RoomSettings },
+    /// The host changed the room's settings (already applied).
+    SettingsChanged { settings: RoomSettings },
     JoinRequest { id: PeerId, name: String },
     JoinCancelled { id: PeerId },
     MemberJoined { id: PeerId, name: String },
@@ -147,6 +151,7 @@ impl Room {
                 link.send(match cmd {
                     RoomCommand::Approve(id) => ToRoom::Approve { id },
                     RoomCommand::Decline(id) => ToRoom::Decline { id },
+                    RoomCommand::SetBuffer(ms) => ToRoom::SetBuffer { buffer_ms: ms },
                     RoomCommand::Remove(id) => {
                         // Take them out here too at once (the room tells everyone else).
                         if let Some(name) = s.partner_name(&id) {
@@ -168,7 +173,16 @@ impl Room {
             while let Ok(msg) = link.incoming.try_recv() {
                 match msg {
                     FromRoom::Waiting => room_events(RoomEvent::Waiting),
-                    FromRoom::Welcome { host, members, settings, .. } => {
+                    FromRoom::Welcome { host, members, settings, ice, .. } => {
+                        // Relay for partners we can't reach directly (if the server has one).
+                        match &ice {
+                            Some(logins) => {
+                                let relays = peer::relay_uris(logins);
+                                crate::log::info(&format!("Relay: {} servers available", relays.len()));
+                                s.set_relays(relays);
+                            }
+                            None => crate::log::info("Relay: none (the room server has no relay set up)"),
+                        }
                         // Everyone in the room uses the host's buffer setting.
                         s.set_receive_buffer(settings.buffer_ms);
                         // ...and sends video at the size that suits the room (before anyone connects).
@@ -198,6 +212,10 @@ impl Room {
                         room_events(RoomEvent::MemberLeft { id, name });
                     }
                     FromRoom::YouAreHost => room_events(RoomEvent::BecameHost),
+                    FromRoom::Settings { settings } => {
+                        s.set_receive_buffer(settings.buffer_ms);
+                        room_events(RoomEvent::SettingsChanged { settings });
+                    }
                     FromRoom::Signal { from, data } => handle_signal(s, &from, &data, &my_name, &out, &events),
                     FromRoom::Reconnecting { .. } => room_events(RoomEvent::ServerReconnecting),
                     FromRoom::Resumed { host } => {

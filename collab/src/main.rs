@@ -156,7 +156,18 @@ fn print_room_event(event: RoomEvent, approve: &Mutex<Option<mpsc::Sender<RoomCo
                     });
                 }
             }
+            // TEST ONLY: VTC_TEST_BUFFER=<ms> makes the host change the receive buffer 10 s after someone joins.
+            if let Some(ms) = std::env::var("VTC_TEST_BUFFER").ok().and_then(|v| v.parse::<u32>().ok()) {
+                if let Some(tx) = approve.lock().unwrap().clone() {
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(10));
+                        println!("[room] setting the receive buffer to {ms} ms (test)");
+                        let _ = tx.send(RoomCommand::SetBuffer(ms));
+                    });
+                }
+            }
         }
+        RoomEvent::SettingsChanged { settings } => println!("[room] receive buffer is now {} ms", settings.buffer_ms),
         RoomEvent::MemberLeft { name, .. } => println!("[room] {name} left"),
         RoomEvent::BecameHost => println!("[room] the host left — you're the host now"),
         RoomEvent::ServerReconnecting => eprintln!("[room] room server connection dropped; reconnecting..."),

@@ -84,6 +84,15 @@ pub const DEFAULT_BUFFER_MS: u32 = 120;
 pub const MIN_BUFFER_MS: u32 = 20;
 pub const MAX_BUFFER_MS: u32 = 500;
 
+/// Lowering quality when partners lose packets of our video (usually a sign our
+/// upload is overloaded). One encoder feeds everyone, so it's the worst partner's
+/// loss that counts. Checked every 5 s report:
+///   loss >= LOSS_HIGH in 2 reports running -> quality x 0.8 (not below QUALITY_MIN)
+///   loss < LOSS_LOW for 6 reports (30 s)   -> quality x 1.15 (back up to full)
+const LOSS_HIGH_PERCENT: f64 = 4.0;
+const LOSS_LOW_PERCENT: f64 = 1.0;
+const QUALITY_MIN: f64 = 0.5;
+
 /// Who starts the negotiation with a partner (makes the "offer").
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Role {
@@ -159,6 +168,12 @@ pub struct Session {
     decoder: String,
     /// Partners whose video stopped (see `take_lost_partners`).
     lost: Vec<PeerId>,
+    /// Relay server addresses (from the room server), added to every new connection.
+    relays: Vec<String>,
+    /// Share of the normal bitrate we send at (QUALITY_MIN-1.0), lowered when partners
+    /// lose packets; and how many reports in a row were bad / good.
+    quality: f64,
+    loss_reports: (u32, u32),
 }
 
 /// Memory layout of the packed NV12 frames we send for a `transmit`-sized avatar:
@@ -225,6 +240,9 @@ impl Session {
             sent_any: false,
             decoder,
             lost: Vec::new(),
+            relays: Vec::new(),
+            quality: 1.0,
+            loss_reports: (0, 0),
         })
     }
 
@@ -261,11 +279,18 @@ impl Session {
     }
 
     /// Set the receive buffer (clamped to 20–500 ms), for current and future partners.
+    /// Works while running: the host can change it for everyone mid-collab.
     pub fn set_receive_buffer(&mut self, ms: u32) {
         self.buffer_ms = ms.clamp(MIN_BUFFER_MS, MAX_BUFFER_MS);
-        for p in self.partners.values() {
-            p.webrtc.set_property("latency", self.buffer_ms);
+        let running: usize = self.partners.values().map(|p| set_latency(&p.webrtc, self.buffer_ms)).sum();
+        if running > 0 {
+            crate::log::info(&format!("Receive buffer: {} ms ({running} running buffers changed)", self.buffer_ms));
         }
+    }
+
+    /// Relay server addresses (see `peer::relay_uris`) for connections made from now on.
+    pub fn set_relays(&mut self, relays: Vec<String>) {
+        self.relays = relays;
     }
 
     // ---------------- partners ----------------
@@ -289,6 +314,13 @@ impl Session {
             .property("stun-server", peer::STUN_SERVER)
             .property("latency", self.buffer_ms)
             .build()?;
+        for relay in &self.relays {
+            webrtc.emit_by_name::<bool>("add-turn-server", &[relay]);
+        }
+        // TEST ONLY: VTC_RELAY_ONLY=1 forces every connection through the relay (to test it).
+        if std::env::var("VTC_RELAY_ONLY").is_ok_and(|v| v == "1") {
+            webrtc.set_property_from_str("ice-transport-policy", "relay");
+        }
         simulate_bad_network(&webrtc);
         self.pipeline.add_many([send_bin.upcast_ref::<gst::Element>(), &webrtc])?;
         send_bin.link(&webrtc)?;
@@ -430,7 +462,8 @@ impl Session {
     fn update_bitrate(&self) {
         let n = self.partners.len().max(1) as u32;
         let (min, max) = bitrate_range(self.transmit);
-        let kbps = (UPLOAD_BUDGET_KBPS / n).clamp(min, max);
+        let full = (UPLOAD_BUDGET_KBPS / n).clamp(min, max);
+        let kbps = (full as f64 * self.quality).round() as u32;
         if let Some(enc) = &self.encoder {
             if enc.find_property("bitrate").is_some() {
                 enc.set_property_from_str("bitrate", &kbps.to_string());
@@ -438,10 +471,42 @@ impl Session {
         }
         if !self.partners.is_empty() && !self.closing {
             let total = kbps as f64 * self.partners.len() as f64 / 1000.0;
+            let lowered = if self.quality < 1.0 { " (lowered: partners are losing packets)" } else { "" };
             self.events.clone()(Event::Info(format!(
-                "Quality: {:.1} Mbit/s per partner, {total:.1} Mbit/s upload in total.",
+                "Quality: {:.1} Mbit/s per partner, {total:.1} Mbit/s upload in total{lowered}.",
                 kbps as f64 / 1000.0
             )));
+        }
+    }
+
+    /// After each 5 s report: adjust quality to the worst loss partners report about
+    /// our video (see LOSS_HIGH_PERCENT).
+    fn adapt_quality(&mut self, worst_loss: Option<f64>) {
+        let Some(loss) = worst_loss else { return };
+        let (bad, good) = &mut self.loss_reports;
+        let before = self.quality;
+        if loss >= LOSS_HIGH_PERCENT {
+            (*bad, *good) = (*bad + 1, 0);
+            if *bad >= 2 {
+                *bad = 0;
+                self.quality = (self.quality * 0.8).max(QUALITY_MIN);
+            }
+        } else if loss < LOSS_LOW_PERCENT {
+            (*bad, *good) = (0, *good + 1);
+            if *good >= 6 {
+                *good = 0;
+                self.quality = (self.quality * 1.15).min(1.0);
+            }
+        } else {
+            (*bad, *good) = (0, 0);
+        }
+        if self.quality != before {
+            crate::log::info(&format!(
+                "Partners lose {loss:.1}% of our video: quality {:.0}% -> {:.0}%",
+                before * 100.0,
+                self.quality * 100.0
+            ));
+            self.update_bitrate();
         }
     }
 
@@ -538,6 +603,7 @@ impl Session {
             if since >= Duration::from_secs(5) {
                 let secs = since.as_secs_f64();
                 let mut received = Vec::new();
+                let mut worst_sent_loss: Option<f64> = None;
                 for (id, p) in self.partners.iter_mut() {
                     let now = p.received.load(Ordering::Relaxed);
                     if now > p.received_at_last_report {
@@ -551,6 +617,9 @@ impl Session {
                         self.lost.push(id.clone());
                     }
                     let net = network_numbers(p);
+                    if let Some(l) = net.sent_loss_percent {
+                        worst_sent_loss = Some(worst_sent_loss.map_or(l, |w: f64| w.max(l)));
+                    }
                     received.push(PartnerStats {
                         id: id.clone(),
                         name: p.name.lock().unwrap().clone(),
@@ -563,6 +632,7 @@ impl Session {
                     request_net_stats(&p.webrtc, p.net_stats.clone()); // ready for next time
                 }
                 received.sort_by(|a, b| a.name.cmp(&b.name));
+                self.adapt_quality(worst_sent_loss);
                 (self.events)(Event::Stats { sent_fps: (sent - last_sent) as f64 / secs, received });
                 (last_sent, last_report) = (sent, Instant::now());
             }
@@ -662,12 +732,14 @@ fn request_net_stats(webrtc: &gst::Element, out: Arc<Mutex<Option<gst::Structure
 ///
 /// The statistics are a list of entries, each with a "type":
 ///   * "inbound-rtp": video coming from the partner — packets received / lost (running totals)
-///   * "remote-inbound-rtp": what the partner reports about our video — includes round-trip time
+///   * "remote-inbound-rtp": what the partner reports about our video — round-trip time,
+///     and the share of our packets they lost lately ("fraction-lost", 0–1)
 fn network_numbers(p: &mut Partner) -> NetNumbers {
     use gstreamer_webrtc::WebRTCStatsType;
     let Some(stats) = p.net_stats.lock().unwrap().clone() else { return NetNumbers::default() };
 
     let (mut lost, mut received, mut requests, mut rtt) = (None::<i64>, None::<u64>, None::<u32>, None::<f64>);
+    let mut sent_loss = None::<f64>;
     for (_, value) in stats.iter() {
         let Ok(entry) = value.get::<gst::Structure>() else { continue };
         match entry.get::<WebRTCStatsType>("type") {
@@ -685,12 +757,17 @@ fn network_numbers(p: &mut Partner) -> NetNumbers {
             }
             Ok(WebRTCStatsType::RemoteInboundRtp) => {
                 rtt = entry.get::<f64>("round-trip-time").ok().filter(|t| *t > 0.0).or(rtt);
+                sent_loss = entry.get::<f64>("fraction-lost").ok().map(|f| f * 100.0).or(sent_loss);
             }
             _ => {}
         }
     }
 
-    let mut out = NetNumbers { round_trip_ms: rtt.map(|seconds| seconds * 1000.0), ..Default::default() };
+    let mut out = NetNumbers {
+        round_trip_ms: rtt.map(|seconds| seconds * 1000.0),
+        sent_loss_percent: sent_loss,
+        ..Default::default()
+    };
     if let (Some(lost), Some(received)) = (lost, received) {
         let (prev_lost, prev_received) = p.packets_at_last_report;
         p.packets_at_last_report = (lost, received);
@@ -711,6 +788,24 @@ struct NetNumbers {
     loss_percent: Option<f64>,
     round_trip_ms: Option<f64>,
     unrepaired: Option<u32>,
+    /// Share of OUR video the partner lost lately (from their reports).
+    sent_loss_percent: Option<f64>,
+}
+
+/// Change a connection's receive buffer while it runs. webrtcbin passes its "latency"
+/// on to connections made later; the jitter buffers already running inside it are
+/// set directly too. Returns how many of those there were.
+fn set_latency(webrtc: &gst::Element, ms: u32) -> usize {
+    webrtc.set_property("latency", ms);
+    let Some(bin) = webrtc.downcast_ref::<gst::Bin>() else { return 0 };
+    let mut changed = 0;
+    for element in bin.iterate_recurse().into_iter().flatten() {
+        if element.factory().is_some_and(|f| f.name() == "rtpjitterbuffer") {
+            element.set_property("latency", ms);
+            changed += 1;
+        }
+    }
+    changed
 }
 
 /// When a partner's video stream appears, attach: depacketiser → decoder → appsink.

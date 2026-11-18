@@ -17,6 +17,9 @@ pub enum RoomError {
     Unavailable(String),
     /// The room code doesn't exist (typo) or the room has closed.
     NotFound,
+    /// The room server runs on a free plan with a daily allowance, and it's used up.
+    /// It works again after midnight UTC.
+    DailyLimit,
     Other(String),
 }
 
@@ -25,12 +28,24 @@ impl fmt::Display for RoomError {
         match self {
             RoomError::Unavailable(why) => write!(f, "the room server can't be reached ({why})"),
             RoomError::NotFound => write!(f, "that room code doesn't exist or the room has closed"),
+            RoomError::DailyLimit => write!(f, "{DAILY_LIMIT}"),
             RoomError::Other(why) => write!(f, "{why}"),
         }
     }
 }
 
 impl std::error::Error for RoomError {}
+
+/// The wording for `RoomError::DailyLimit` (the app spots it to explain what to do).
+pub const DAILY_LIMIT: &str = "the room server has reached its free daily limit";
+
+/// Time until the room server's daily allowance resets (midnight UTC), e.g. "3 h 20 min".
+pub fn until_daily_reset() -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let left = 86_400 - now % 86_400;
+    let (h, m) = (left / 3600, (left % 3600).div_ceil(60));
+    if h == 0 { format!("{m} min") } else { format!("{h} h {m} min") }
+}
 
 /// Clean up a typed room code: "minty otter 42" → "MINTY-OTTER-42".
 /// Returns `None` if the text can't be a room code.

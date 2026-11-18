@@ -2,6 +2,13 @@
 # Deploy: `npx wrangler deploy` (from this folder). Local test: `npx wrangler dev`.
 # Runs on the Workers Free plan: when the daily free limit is used up, requests
 # fail until midnight UTC — nothing is charged.
+#
+# Relay for people whose network blocks direct connections (optional): create a
+# TURN key in the Cloudflare dashboard (Realtime > TURN Server), then store it once:
+#   npx wrangler secret put TURN_KEY_ID
+#   npx wrangler secret put TURN_KEY_API_TOKEN
+# The first 1,000 GB of relayed video per month are free (then $0.05/GB). Without
+# these secrets everything still works, just without the relay.
 
 name = "vtube-collab"
 main = "src/index.js"

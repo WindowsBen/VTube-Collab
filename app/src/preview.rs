@@ -1,7 +1,8 @@
 //! TEST ONLY — preview mode for screenshots: `VTC_PREVIEW=<screen>` opens a screen
 //! filled with sample people and stats, without connecting to anything.
 //!
-//!   setup, settings, join, waiting, room, guest, long, about, howto, menu, error, remove
+//!   setup, settings, join, waiting, room, guest, long, limit, update, about, howto, menu,
+//!   error, remove, buffer
 //!   — add "+about" or "+howto" to open that dialog on top, e.g. "setup+howto".
 
 use std::sync::{Arc, Mutex};
@@ -49,6 +50,21 @@ fn apply_screen(app: &mut App, which: &str) {
             };
             app.status = "Room codes unavailable; using long codes.".into();
         }
+        "limit" => {
+            app.screen = Screen::HostLong {
+                why: collab::rooms::DAILY_LIMIT.into(),
+                invite: Some("VTC1-lZTZbtpAFIZfZcRtAszi2Y7ERcBYTUUTsirrhRmPEzdgu7azqeq7".into()),
+                reply_input: String::new(),
+                error: None,
+            };
+            app.status = "Room codes unavailable; using long codes.".into();
+        }
+        "update" => {
+            *app.new_version.lock().unwrap() = Some(collab::update::NewVersion {
+                version: "0.4.0-beta".into(),
+                page: collab::update::WEBSITE.into(),
+            });
+        }
         "menu" => app.open_menu = Some(crate::Menu::Help),
         "error" => {
             // The avatar is on another graphics card than any we can use.
@@ -59,7 +75,7 @@ fn apply_screen(app: &mut App, which: &str) {
             app.setup_error = Some(e.into());
             app.status = e.into();
         }
-        "room" | "guest" | "about" | "howto" | "remove" => {
+        "room" | "guest" | "about" | "howto" | "remove" | "buffer" => {
             let host = which != "guest";
             app.screen = Screen::Room { code: Some("MINTY-OTTER-42".into()), host, long_codes: false };
             app.room_settings = Some(RoomSettings::default());
@@ -70,6 +86,9 @@ fn apply_screen(app: &mut App, which: &str) {
                 member("m3", "Mia", Some(ConnState::Connected), Some(57.0), Some(2.9), Some(4), Some(71.0)),
                 member("m5", "Zoe", Some(ConnState::Connecting), None, None, None, None),
             ];
+            if which == "buffer" {
+                app.buffer_edit = Some(250);
+            }
             if host {
                 app.requests = vec![("m6".into(), "Kai".into())];
             }

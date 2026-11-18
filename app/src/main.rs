@@ -101,7 +101,7 @@ pub enum Dialog {
 impl Dialog {
     fn size(self) -> egui::Vec2 {
         match self {
-            Dialog::About => vec2(360.0, 210.0),
+            Dialog::About => vec2(360.0, 240.0),
             Dialog::HowTo => vec2(360.0, 288.0),
         }
     }
@@ -128,6 +128,10 @@ pub struct App {
     server_lost: bool,
     /// Host: the person whose Remove button was clicked (waiting for "are you sure?").
     pub confirm_remove: Option<String>,
+    /// Host: the receive buffer being chosen in the room (before "Apply").
+    pub buffer_edit: Option<u32>,
+    /// A newer version, if the update check (in the background, at start) found one.
+    pub new_version: Arc<std::sync::Mutex<Option<collab::update::NewVersion>>>,
     copied_at: Option<Instant>,
     setup_error: Option<String>,
     // Window chrome.
@@ -169,6 +173,8 @@ impl App {
             room_settings: None,
             server_lost: false,
             confirm_remove: None,
+            buffer_edit: None,
+            new_version: Arc::default(),
             copied_at: None,
             setup_error: None,
             open_menu: None,
@@ -182,6 +188,15 @@ impl App {
         // TEST ONLY: VTC_PREVIEW=room (etc.) shows a screen with sample data, for screenshots.
         if let Ok(which) = std::env::var("VTC_PREVIEW") {
             preview::apply(&mut app, &which);
+        } else {
+            // Look for a newer version in the background (never slows the start).
+            let (found, ctx) = (app.new_version.clone(), ctx.clone());
+            std::thread::spawn(move || {
+                if let Some(v) = collab::update::check() {
+                    *found.lock().unwrap() = Some(v);
+                    ctx.request_repaint();
+                }
+            });
         }
         app
     }
@@ -204,6 +219,7 @@ impl App {
         self.room_settings = None;
         self.server_lost = false;
         self.confirm_remove = None;
+        self.buffer_edit = None;
     }
 
     fn refresh_sources(&mut self) {
@@ -284,7 +300,17 @@ impl App {
                     // Joining failed before getting in (wrong code, declined...): stay on the
                     // Join screen so it can be retried. Anything else: back to Setup.
                     if let (Screen::Join { error: join_error, phase, .. }, Some(e)) = (&mut self.screen, &error) {
-                        *join_error = Some(format!("Couldn't join: {e}"));
+                        *join_error = Some(if e.contains(collab::rooms::DAILY_LIMIT) {
+                            format!(
+                                "Couldn't join: the free room server has used up today's allowance. It works \
+                                 again at midnight UTC (in {}). Until then, the host can invite one person \
+                                 with a long invite code (it appears when hosting fails), which you can \
+                                 paste here.",
+                                collab::rooms::until_daily_reset()
+                            )
+                        } else {
+                            format!("Couldn't join: {e}")
+                        });
                         *phase = JoinPhase::Idle;
                         self.status = "Couldn't join.".into();
                         return;
@@ -371,6 +397,11 @@ impl App {
                 self.screen = Screen::Room { code, host, long_codes: false };
                 self.status = if host { "Room open. Share the room code.".into() } else { "You're in!".into() };
             }
+            RoomEvent::SettingsChanged { settings } => {
+                self.room_settings = Some(settings);
+                self.buffer_edit = None;
+                self.status = format!("Receive buffer is now {} ms for everyone.", settings.buffer_ms);
+            }
             RoomEvent::JoinRequest { id, name } => {
                 self.status = format!("{name} wants to join.");
                 // After a reconnect the room sends waiting requests again.
@@ -446,6 +477,7 @@ impl App {
             ui.add_space(4.0);
             ui.colored_label(colour::ERROR, e);
         }
+        self.update_notice(ui);
         let ready = !self.name.trim().is_empty() && self.source.is_some();
         if !ready {
             xp::hint(ui, "Enter your name and pick your avatar to start.");
@@ -463,6 +495,21 @@ impl App {
                 self.screen = Screen::HostSettings { settings: self.last_room_settings };
                 self.status = "Choose the room settings.".into();
             }
+        });
+    }
+
+    /// "Version X is available" with a button to its download page (if there is one).
+    fn update_notice(&self, ui: &mut egui::Ui) {
+        let Some(v) = self.new_version.lock().unwrap().clone() else { return };
+        xp::group(ui, "Update available", |ui| {
+            ui.horizontal(|ui| {
+                ui.label(format!("VTube Collab {} is out (you have {}).", v.version, env!("CARGO_PKG_VERSION")));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if xp::button(ui, "Download...", true, false).clicked() {
+                        open_web_page(&v.page);
+                    }
+                });
+            });
         });
     }
 
@@ -587,8 +634,21 @@ impl App {
         let mut send_reply: Option<String> = None;
 
         xp::group(ui, "Room codes are unavailable right now", |ui| {
-            xp::hint(ui, &format!("({why})"));
-            ui.label("You can still collab with one person using long codes.");
+            if why.contains(collab::rooms::DAILY_LIMIT) {
+                ui.label(format!(
+                    "The room server runs on a free plan with a daily allowance, and today's is used up. \
+                     It works again at midnight UTC (in {}).",
+                    collab::rooms::until_daily_reset()
+                ));
+                xp::hint(ui, "Collabs that are already running are not affected.");
+            } else {
+                ui.label("Couldn't open a room. Check that you're online. If other websites work, a firewall \
+                          or antivirus may be blocking VTube Collab, or the room server is having trouble: \
+                          try again in a few minutes.");
+                xp::hint(ui, &format!("({why})"));
+            }
+            ui.label("Meanwhile you can collab with one person using long codes: send them the invite \
+                      code below, they paste it into \"Join a collab\" and send you back their reply code.");
         });
         xp::group(ui, "Long codes", |ui| {
             ui.label("1. Send this invite code to your partner:");
@@ -654,12 +714,15 @@ impl App {
                         "Others can join with this code (the host lets them in).".to_string()
                     };
                     xp::hint(ui, &hint);
-                    if let Some(s) = &self.room_settings {
+                    if let Some(s) = self.room_settings {
                         let (w, h) = collab::transmit_size_for(s.max_people);
                         xp::hint(
                             ui,
                             &format!("Up to {} people · {w}×{h} video · {} ms receive buffer", s.max_people, s.buffer_ms),
                         );
+                        if host {
+                            self.buffer_control(ui, s.buffer_ms);
+                        }
                     }
                 }
             });
@@ -688,7 +751,7 @@ impl App {
             for d in decisions {
                 let id = match &d {
                     ToWorker::Approve(id) | ToWorker::Decline(id) => id.clone(),
-                    ToWorker::Remove(_) | ToWorker::Reply(_) => continue,
+                    ToWorker::Remove(_) | ToWorker::SetBuffer(_) | ToWorker::Reply(_) => continue,
                 };
                 self.requests.retain(|(r, _)| *r != id);
                 if let Some(w) = &self.worker {
@@ -803,6 +866,28 @@ impl App {
         });
         if leave {
             self.reset("You left.");
+        }
+    }
+
+    /// Host: change the receive buffer for everyone while in the room. The slider only
+    /// picks a value; "Apply" sends it (so dragging doesn't send dozens of changes).
+    fn buffer_control(&mut self, ui: &mut egui::Ui, current: u32) {
+        let mut value = self.buffer_edit.unwrap_or(current);
+        let mut apply = false;
+        ui.horizontal(|ui| {
+            ui.label("Receive buffer:");
+            xp::slider(ui, &mut value, collab::MIN_BUFFER_MS..=collab::MAX_BUFFER_MS, 170.0, " ms");
+            apply = xp::button(ui, "Apply", value != current && !self.server_lost, false).clicked();
+        });
+        self.buffer_edit = (value != current).then_some(value);
+        if apply {
+            if let Some(w) = &self.worker {
+                w.send(ToWorker::SetBuffer(value));
+            }
+            self.status = format!("Changing the receive buffer to {value} ms...");
+        }
+        if value != current {
+            xp::hint(ui, "Applies to everyone in the room. More = smoother on bad connections, but avatars appear later.");
         }
     }
 
@@ -1046,6 +1131,9 @@ fn dialog_contents(ui: &mut egui::Ui, dialog: Dialog, ok: &mut bool) {
             ui.add_space(6.0);
             ui.label("Collab with VTubers using any VTubing app: avatars travel directly between your PCs, with transparency, into OBS.");
             xp::hint(ui, "Uses GStreamer (LGPL) for video. Licences are in the 'licenses' folder.");
+            if xp::button(ui, "Website...", true, false).clicked() {
+                open_web_page(collab::update::WEBSITE);
+            }
         }
         Dialog::HowTo => {
             for step in [
@@ -1067,6 +1155,13 @@ fn dialog_contents(ui: &mut egui::Ui, dialog: Dialog, ok: &mut bool) {
             *ok = true;
         }
     });
+}
+
+/// Open a web page in the default browser.
+fn open_web_page(url: &str) {
+    if url.starts_with("https://") {
+        let _ = std::process::Command::new("explorer").arg(url).spawn();
+    }
 }
 
 /// A row of buttons aligned to the right, XP-dialog style. Add them in reading order
