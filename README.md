@@ -234,4 +234,4 @@ ship in the `licenses` folder of every release.
 ## Disclaimer
 
 VTube Collab is almost entirely written with Claude Code. I as the app creator feel the need to disclose this information for transparency.
-Every part of it has been thoroughly reviewed to make sure no security issues are there. However, if you decide to look for some and find them, please report them in [issues](https://github.com/WindowsBen/VTube-Collab/issues/new)
+Every part of it has been thoroughly reviewed to make sure no security issues are there. However, if you decide to look for some and find them, please report them in [issues](https://github.com/WindowsBen/VTube-Collab/issues/new).
