@@ -88,6 +88,9 @@ PRIVACY
 
 Updates: the app tells you when a new version is out (Help > About > Website).
 
+VTube Collab is free and will stay free. If you'd like to say thanks, you can leave a
+tip: https://streamelements.com/windowsben/tip (also under Help > Leave a tip...).
+
 VTube Collab is open source under the MIT licence. It includes GStreamer (LGPL) and
 other open-source libraries, plus the Microsoft C++ runtime. All licences are in the
 "licenses" folder.

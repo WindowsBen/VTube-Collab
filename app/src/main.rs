@@ -101,7 +101,7 @@ pub enum Dialog {
 impl Dialog {
     fn size(self) -> egui::Vec2 {
         match self {
-            Dialog::About => vec2(360.0, 256.0),
+            Dialog::About => vec2(360.0, 284.0),
             Dialog::HowTo => vec2(360.0, 288.0),
         }
     }
@@ -1003,6 +1003,10 @@ impl App {
                                     self.open_dialog(ui.ctx(), Dialog::HowTo);
                                     self.open_menu = None;
                                 }
+                                if xp::menu_item(ui, "Leave a tip...").clicked() {
+                                    open_web_page(collab::update::DONATE);
+                                    self.open_menu = None;
+                                }
                                 xp::menu_separator(ui);
                                 if xp::menu_item(ui, "About VTube Collab").clicked() {
                                     self.open_dialog(ui.ctx(), Dialog::About);
@@ -1134,9 +1138,16 @@ fn dialog_contents(ui: &mut egui::Ui, dialog: Dialog, ok: &mut bool) {
             ui.add_space(6.0);
             ui.label("Collab with VTubers using any VTubing app: avatars travel directly between your PCs, with transparency, into OBS.");
             xp::hint(ui, "Open source (MIT licence). Uses GStreamer (LGPL) for video. Licences are in the 'licenses' folder.");
-            if xp::button(ui, "Website...", true, false).clicked() {
-                open_web_page(collab::update::WEBSITE);
-            }
+            ui.add_space(2.0);
+            xp::hint(ui, "VTube Collab is free and stays free. If you'd like to say thanks, tips are welcome.");
+            ui.horizontal(|ui| {
+                if xp::button(ui, "Website...", true, false).clicked() {
+                    open_web_page(collab::update::WEBSITE);
+                }
+                if xp::button(ui, "Leave a tip...", true, false).clicked() {
+                    open_web_page(collab::update::DONATE);
+                }
+            });
         }
         Dialog::HowTo => {
             for step in [

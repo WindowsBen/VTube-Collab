@@ -6,6 +6,8 @@ use std::time::Duration;
 const LATEST_RELEASE: &str = "https://api.github.com/repos/WindowsBen/VTube-Collab/releases/latest";
 /// Where to download VTube Collab and report problems.
 pub const WEBSITE: &str = "https://github.com/WindowsBen/VTube-Collab/releases";
+/// Tips for the developer (VTube Collab is free; tipping is entirely optional).
+pub const DONATE: &str = "https://streamelements.com/windowsben/tip";
 
 /// A newer version than this one.
 #[derive(Debug, Clone)]

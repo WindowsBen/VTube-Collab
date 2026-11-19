@@ -9,6 +9,7 @@ and shows up in OBS as its own source.
 [![Download](https://img.shields.io/github/v/release/WindowsBen/VTube-Collab?include_prereleases&label=download&style=for-the-badge&color=2b6cd4)](https://github.com/WindowsBen/VTube-Collab/releases/latest)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d4?style=for-the-badge)](#requirements)
 [![License](https://img.shields.io/badge/license-MIT-3da639?style=for-the-badge)](LICENSE)
+[![Tip](https://img.shields.io/badge/leave_a_tip-StreamElements-e6007e?style=for-the-badge)](https://streamelements.com/windowsben/tip)
 
 <img src="docs/screenshots/room.png" alt="A VTube Collab room with three partners" width="420">
 
@@ -18,17 +19,17 @@ and shows up in OBS as its own source.
 
 ## ✨ Features
 
-- 🎭 **Works with any VTubing app** that has Spout2 output: VTube Studio, Warudo, VSeeFace, VNyan and more.
-- 🪟 **Real transparency.** Avatars arrive with their background cut out, ready to place in your scene.
-- 🔗 **One short room code** like `MINTY-OTTER-42`. The host decides who gets in.
-- 👥 **Up to 100 people per room.** Comfortable for small groups on typical home internet.
-- 🎬 **One OBS source per person**, or a single *group* source with everyone stacked in the order you choose.
-- ⚡ **Direct and low-latency.** Video goes from PC to PC, encrypted, encoded on your graphics card.
-- 📶 **Copes with bad connections.** Lost data is resent, quality adjusts itself, and the host can raise the
+- **Works with any VTubing app** that has Spout2 output: VTube Studio, Warudo, VSeeFace, VNyan and more.
+- **Real transparency.** Avatars arrive with their background cut out, ready to place in your scene.
+- **One short room code** like `MINTY-OTTER-42`. The host decides who gets in.
+- **Up to 100 people per room.** Comfortable for small groups on typical home internet.
+- **One OBS source per person**, or a single *group* source with everyone stacked in the order you choose.
+- **Direct and low-latency.** Video goes from PC to PC, encrypted, encoded on your graphics card.
+- **Copes with bad connections.** Lost data is resent, quality adjusts itself, and the host can raise the
   receive buffer for everyone mid-collab.
-- 🔄 **Survives hiccups.** If the room server connection drops, the app reconnects on its own and the video
+- **Survives hiccups.** If the room server connection drops, the app reconnects on its own and the video
   keeps running.
-- 💸 **Free.** No account, no subscription.
+- **Free.** No account, no subscription.
 
 ## 📋 Requirements
 
@@ -217,8 +218,20 @@ Point the app at another server with the `VTC_SERVER` environment variable, e.g.
 See [DESIGN.md](DESIGN.md) for how it all works and why.
 </details>
 
+## 💜 Support
+
+VTube Collab is free and will stay free: no account, no subscription, no paid features.<br>
+If it made your collabs better and you'd like to say thanks, you can
+**[leave a tip on StreamElements](https://streamelements.com/windowsben/tip)**. It's never expected, and
+always appreciated. The app has the same link under **Help → Leave a tip...**.
+
 ## 📄 License
 
 VTube Collab is released under the [MIT License](LICENSE).<br>
 It uses [GStreamer](https://gstreamer.freedesktop.org/) (LGPL) and other open-source libraries; their licences
 ship in the `licenses` folder of every release.
+
+## Disclaimer
+
+VTube Collab is almost entirely written with Claude Code. I as the app creator feel the need to disclose this information for transparency.
+Every part of it has been thoroughly reviewed to make sure no security issues are there. However, if you decide to look for some and find them, please report them in [issues](https://github.com/WindowsBen/VTube-Collab/issues/new)
