@@ -1,5 +1,5 @@
 # Cargo "workspace": groups the project's Rust programs so they share one build
 # folder (target\), one Cargo.lock, and can use each other's code.
 [workspace]
-members = ["vtc-core", "collab", "app"]
+members = ["vtc-core", "collab", "app", "launcher"]
 resolver = "3"

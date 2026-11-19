@@ -10,7 +10,7 @@ output turned on.
 
 INSTALL
 1. Unzip the whole folder somewhere (e.g. Documents). Keep the files together.
-2. Double-click "Start VTube Collab.bat".
+2. Double-click "VTube Collab.exe".
 
 "Windows protected your PC"? Click "More info", then "Run anyway". Windows shows this
 for programs that aren't signed with a paid certificate; it doesn't mean anything was

@@ -1,0 +1,14 @@
+[package]
+name = "launcher"
+version = "0.4.0-beta"
+license = "MIT"
+edition = "2024"
+
+# Built as vtc-launcher.exe; the release bundle renames it to "VTube Collab.exe".
+[[bin]]
+name = "vtc-launcher"
+path = "src/main.rs"
+
+[build-dependencies]
+png = "0.18.1"
+winresource = "0.1.34"

@@ -15,3 +15,7 @@ eframe = "0.37.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 vtc-core = { path = "../vtc-core" }
+
+[build-dependencies]
+png = "0.18.1"
+winresource = "0.1.34"

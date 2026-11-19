@@ -6,7 +6,7 @@
 #
 # Layout (GStreamer finds its plugins relative to its own DLLs, so this must be kept):
 #   VTubeCollab\
-#     Start VTube Collab.bat    double-click to open the app window
+#     VTube Collab.exe          double-click to open the app (starts bin\VTubeCollab.exe)
 #     bin\VTubeCollab.exe       the app window
 #     bin\                      + GStreamer core DLLs + Microsoft C++ runtime DLLs
 #     lib\gstreamer-1.0\        only the plugins collab uses
@@ -53,9 +53,9 @@ $plugins = @(
 )
 
 # ---- Build collab ----
-Write-Host "Building VTubeCollab.exe (release)..."
+Write-Host "Building VTubeCollab.exe and the launcher (release)..."
 Push-Location $root
-cargo build --release -p app
+cargo build --release -p app -p launcher
 if ($LASTEXITCODE -ne 0) { Pop-Location; throw "build failed" }
 Pop-Location
 
@@ -112,8 +112,9 @@ foreach ($l in $licences) {
 }
 (Get-Content "$root\docs\README.txt" -Raw).Replace('{VERSION}', $version) | Set-Content "$bundle\README.txt" -Encoding UTF8 -NoNewline
 
-# Double-click starter next to the readme (the .exe must stay in bin\ with its DLLs).
-"@echo off`r`nstart `"`" `"%~dp0bin\VTubeCollab.exe`"`r`n" | Set-Content "$bundle\Start VTube Collab.bat" -Encoding ASCII -NoNewline
+# Double-click starter next to the readme, with the app's icon (the app itself must
+# stay in bin\ with its DLLs).
+Copy-Item "$root\target\release\vtc-launcher.exe" "$bundle\VTube Collab.exe"
 
 Compress-Archive -Path $bundle -DestinationPath $zip
 

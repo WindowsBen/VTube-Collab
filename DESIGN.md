@@ -262,6 +262,13 @@ Progress:
     room connections (joins/reconnects) a minute per IP. Over the limit → HTTP 503, and the app says "wait a
     minute". (429 stays reserved for Cloudflare's daily limit.)
   - Licence: MIT (LICENSE, Cargo.toml `license`, shipped in the bundle's licenses folder, shown in About).
+  - App icon built into VTubeCollab.exe (app/build.rs: the drawn icon from app/src/icon.rs → .ico with 16–256 px
+    PNG images → `winresource`), with "VTube Collab" as the program's name, so Explorer, the taskbar, pinned
+    shortcuts and Task Manager show it. Building needs the Windows SDK's resource compiler (comes with the
+    Visual Studio Build Tools).
+  - "VTube Collab.exe" launcher (`launcher/`, ~240 KB, same icon) at the top of the release folder replaces
+    `Start VTube Collab.bat`: it starts bin\VTubeCollab.exe and closes, or shows a message box if bin\ is
+    missing. The icon/name build step is shared in app/build_icon.rs.
   - Cleanup for release: removed `spout-probe/`, `collab.exe` from the zip (the CLI stays in the repo), and
     the test switches `VTC_SIMULATE_LOSS`, `VTC_SIMULATE_DELAY_MS`, `VTC_DECODER`, `VTC_ENCODER`,
     `VTC_TEST_REMOVE`, `VTC_TEST_BUFFER`. Kept: `VTC_SERVER` (own room server) and `VTC_PREVIEW` (screenshots).

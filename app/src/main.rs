@@ -7,6 +7,7 @@
 // Release builds open without a black console window behind the app.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod icon;
 mod prefs;
 mod preview;
 mod theme;
@@ -45,9 +46,10 @@ fn main() -> eframe::Result {
     eframe::run_native("VTube Collab", options, Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))))
 }
 
-/// The taskbar / window icon (32×32).
+/// The window icon (title bar, Alt+Tab). 64 px so it stays sharp when Windows scales it.
+/// (Explorer, the taskbar and Task Manager use the icon built into the .exe, see build.rs.)
 fn app_icon() -> egui::IconData {
-    egui::IconData { rgba: xp::app_icon_rgba(32), width: 32, height: 32 }
+    egui::IconData { rgba: icon::rgba(64), width: 64, height: 64 }
 }
 
 /// Where joining is at.

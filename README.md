@@ -45,7 +45,7 @@ and shows up in OBS as its own source.
 
 1. Download the latest **VTubeCollab-x.y.z.zip** from [Releases](https://github.com/WindowsBen/VTube-Collab/releases/latest).
 2. Unzip the whole folder somewhere, e.g. *Documents*. Keep the files together.
-3. Double-click **`Start VTube Collab.bat`**.
+3. Double-click **`VTube Collab.exe`**.
 
 > [!NOTE]
 > **"Windows protected your PC"?** Click **More info → Run anyway**. Windows shows this for programs that
