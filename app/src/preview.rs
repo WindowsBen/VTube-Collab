@@ -79,18 +79,18 @@ fn apply_screen(app: &mut App, which: &str) {
             let host = which != "guest";
             app.screen = Screen::Room { code: Some("MINTY-OTTER-42".into()), host, long_codes: false };
             app.room_settings = Some(RoomSettings::default());
-            app.status = "Connected to Beat.".into();
+            app.status = "Connected to Guest 1.".into();
             app.sent_fps = Some(60.0);
             app.members = vec![
-                member("m2", "Beat", Some(ConnState::Connected), Some(60.0), Some(0.2), Some(0), Some(38.0)),
-                member("m3", "Mia", Some(ConnState::Connected), Some(57.0), Some(2.9), Some(4), Some(71.0)),
-                member("m5", "Zoe", Some(ConnState::Connecting), None, None, None, None),
+                member("m2", "Guest 1", Some(ConnState::Connected), Some(60.0), Some(0.2), Some(0), Some(38.0)),
+                member("m3", "Guest 2", Some(ConnState::Connected), Some(57.0), Some(2.9), Some(4), Some(71.0)),
+                member("m5", "Guest 3", Some(ConnState::Connecting), None, None, None, None),
             ];
             if which == "buffer" {
                 app.buffer_edit = Some(250);
             }
             if host {
-                app.requests = vec![("m6".into(), "Kai".into())];
+                app.requests = vec![("m6".into(), "Guest 4".into())];
             }
             app.group_name = Some(collab::GROUP_SOURCE.into());
             let layer = |id: &str, label: &str, visible: bool, is_me: bool| GroupLayer {
@@ -103,12 +103,12 @@ fn apply_screen(app: &mut App, which: &str) {
             // "room" shows the group source switched on; "guest" shows it off.
             app.group_enabled = Some(Arc::new(std::sync::atomic::AtomicBool::new(host)));
             app.group_layers = Some(Arc::new(Mutex::new(vec![
-                layer("m3", "Mia", true, false),
-                layer("m2", "Beat", true, false),
+                layer("m3", "Guest 2", true, false),
+                layer("m2", "Guest 1", true, false),
                 layer("me", "You (Ben)", false, true),
             ])));
             if which == "remove" {
-                app.confirm_remove = Some("m3".into()); // "are you sure?" for Mia
+                app.confirm_remove = Some("m3".into()); // "are you sure?" for Guest 2
             }
             match which {
                 "about" => app.dialogs.push((Dialog::About, None)),
