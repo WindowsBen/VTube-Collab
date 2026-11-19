@@ -1,7 +1,7 @@
 //! vtc-core: code shared by every VTube Collab program.
 //!
 //!   spout      — reading Spout2's list of senders and their details
-//!   grab       — capturing frames from a Spout2 sender into memory (used by spout-probe)
+//!   grab       — capturing frames from a Spout2 sender into memory (finding which graphics card the avatar is on)
 //!   sender     — publishing our own Spout2 sender (for OBS)
 //!   gpu        — packing colour + alpha side by side (so transparency survives H.264)
 //!                and unpacking it again, on the graphics card

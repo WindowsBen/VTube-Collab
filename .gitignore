@@ -9,7 +9,7 @@ node_modules/
 # Bundles built by tools/make-bundle.ps1
 /dist/
 
-# Test frame captures (spout-probe, encode-test, ...)
+# Test frame captures
 **/captures/
 
 # Editor / OS clutter

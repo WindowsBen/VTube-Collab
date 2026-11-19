@@ -45,15 +45,7 @@ pub fn pick(bitrate_kbps: u32, gop: u64) -> Result<Encoder, String> {
         ),
     ];
 
-    // For testing: VTC_ENCODER=amfh264enc (etc.) forces a specific encoder.
-    let forced = std::env::var("VTC_ENCODER").ok();
-
     for (element, label, pipeline) in candidates {
-        if let Some(f) = &forced {
-            if f != element {
-                continue;
-            }
-        }
         if gst::ElementFactory::find(element).is_some() {
             return Ok(Encoder { label, pipeline });
         }

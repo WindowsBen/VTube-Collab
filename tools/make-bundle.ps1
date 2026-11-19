@@ -8,7 +8,6 @@
 #   VTubeCollab\
 #     Start VTube Collab.bat    double-click to open the app window
 #     bin\VTubeCollab.exe       the app window
-#     bin\collab.exe            command-line tool (for testing)
 #     bin\                      + GStreamer core DLLs + Microsoft C++ runtime DLLs
 #     lib\gstreamer-1.0\        only the plugins collab uses
 #     libexec\gstreamer-1.0\    gst-plugin-scanner.exe (GStreamer's plugin checker)
@@ -54,9 +53,9 @@ $plugins = @(
 )
 
 # ---- Build collab ----
-Write-Host "Building VTubeCollab.exe and collab.exe (release)..."
+Write-Host "Building VTubeCollab.exe (release)..."
 Push-Location $root
-cargo build --release -p collab -p app
+cargo build --release -p app
 if ($LASTEXITCODE -ne 0) { Pop-Location; throw "build failed" }
 Pop-Location
 
@@ -68,7 +67,6 @@ foreach ($d in 'bin', 'lib\gstreamer-1.0', 'libexec\gstreamer-1.0', 'licenses') 
 }
 
 Copy-Item "$root\target\release\VTubeCollab.exe" "$bundle\bin\"
-Copy-Item "$root\target\release\collab.exe" "$bundle\bin\"
 Copy-Item "$gst\libexec\gstreamer-1.0\gst-plugin-scanner.exe" "$bundle\libexec\gstreamer-1.0\"
 foreach ($p in $plugins) { Copy-Item "$gst\lib\gstreamer-1.0\$p.dll" "$bundle\lib\gstreamer-1.0\" }
 
@@ -77,7 +75,6 @@ foreach ($p in $plugins) { Copy-Item "$gst\lib\gstreamer-1.0\$p.dll" "$bundle\li
 # are part of Windows (or the C++ runtime, handled below) and are skipped.
 $queue = New-Object System.Collections.Queue
 $queue.Enqueue("$bundle\bin\VTubeCollab.exe")
-$queue.Enqueue("$bundle\bin\collab.exe")
 $queue.Enqueue("$bundle\libexec\gstreamer-1.0\gst-plugin-scanner.exe")
 foreach ($p in $plugins) { $queue.Enqueue("$bundle\lib\gstreamer-1.0\$p.dll") }
 $seen = @{}

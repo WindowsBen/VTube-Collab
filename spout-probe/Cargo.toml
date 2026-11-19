@@ -1,9 +1,0 @@
-[package]
-name = "spout-probe"
-version = "0.4.0-beta"
-license = "MIT"
-edition = "2024"
-
-[dependencies]
-image = { version = "0.25.10", default-features = false, features = ["png"] }
-vtc-core = { path = "../vtc-core" }

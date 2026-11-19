@@ -306,7 +306,6 @@ impl Session {
             .property("stun-server", peer::STUN_SERVER)
             .property("latency", self.buffer_ms)
             .build()?;
-        simulate_bad_network(&webrtc);
         self.pipeline.add_many([send_bin.upcast_ref::<gst::Element>(), &webrtc])?;
         send_bin.link(&webrtc)?;
 
@@ -672,35 +671,6 @@ impl Drop for Session {
     }
 }
 
-/// TEST ONLY — imitate a bad internet route on one PC. Never set in normal use.
-///   VTC_SIMULATE_LOSS=0.03       drop 3% of the packets we send
-///   VTC_SIMULATE_DELAY_MS=60     delay every packet we send by 60 ms
-///
-/// The simulator goes where webrtcbin hands packets to the network ("aux sender"), i.e.
-/// *after* webrtcbin keeps a copy for resending — like real internet loss, so lost
-/// packets can still be resent (and arrive late, by the delay).
-fn simulate_bad_network(webrtc: &gst::Element) {
-    let var = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<f64>().ok());
-    let loss = var("VTC_SIMULATE_LOSS").filter(|p| *p > 0.0 && *p < 1.0);
-    let delay = var("VTC_SIMULATE_DELAY_MS").filter(|d| *d > 0.0).map(|d| d as i32);
-    if loss.is_none() && delay.is_none() {
-        return;
-    }
-    webrtc.connect("request-aux-sender", false, move |_| {
-        let mut builder = gst::ElementFactory::make("netsim");
-        if let Some(p) = loss {
-            builder = builder.property("drop-probability", p as f32);
-        }
-        if let Some(ms) = delay {
-            builder = builder
-                .property("delay-probability", 1.0f32)
-                .property("min-delay", ms)
-                .property("max-delay", ms);
-        }
-        builder.build().ok().map(|e| e.to_value())
-    });
-}
-
 /// Ask webrtcbin for its connection statistics. The answer arrives in the background
 /// and is read at the next 5-second report (so the video loop never waits for it).
 fn request_net_stats(webrtc: &gst::Element, out: Arc<Mutex<Option<gst::Structure>>>) {
@@ -927,19 +897,12 @@ fn spawn_spout_thread(
 /// default card, "d3d11h264device1dec" for the next, and so on. On laptops with two
 /// cards the default is often the weak built-in one, which can't keep up with
 /// several partners at once.
-///
-/// TEST ONLY: VTC_DECODER=d3d11h264device1dec forces a decoder (e.g. to test an
-/// AMD/Intel decoder on a PC whose default card is NVIDIA).
 fn pick_decoder() -> (String, String) {
     let label = |name: &str| {
         gst::ElementFactory::find(name)
             .and_then(|f| f.metadata("long-name").map(String::from))
             .unwrap_or_else(|| name.to_string())
     };
-    if let Ok(name) = std::env::var("VTC_DECODER") {
-        let l = label(&name);
-        return (name, l);
-    }
     if let Some(card) = vtc_core::grab::card_id_in_use() {
         let names = std::iter::once("d3d11h264dec".to_string()).chain((1..8).map(|i| format!("d3d11h264device{i}dec")));
         for name in names {

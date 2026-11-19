@@ -262,11 +262,15 @@ Progress:
     room connections (joins/reconnects) a minute per IP. Over the limit → HTTP 503, and the app says "wait a
     minute". (429 stays reserved for Cloudflare's daily limit.)
   - Licence: MIT (LICENSE, Cargo.toml `license`, shipped in the bundle's licenses folder, shown in About).
+  - Cleanup for release: removed `spout-probe/`, `collab.exe` from the zip (the CLI stays in the repo), and
+    the test switches `VTC_SIMULATE_LOSS`, `VTC_SIMULATE_DELAY_MS`, `VTC_DECODER`, `VTC_ENCODER`,
+    `VTC_TEST_REMOVE`, `VTC_TEST_BUFFER`. Kept: `VTC_SERVER` (own room server) and `VTC_PREVIEW` (screenshots).
   - Works with older clients and the old server (then no buffer changes). New server must be
     deployed.
 
 Code layout: `vtc-core/` (shared: Spout capture/output, GPU pack/unpack, compositor), `collab/` (connection
-engine + CLI), `app/` (window), `handshake/` (Cloudflare room server), `spout-probe/` (test tool: list/grab/watch).
+engine + CLI), `app/` (window), `handshake/` (Cloudflare room server). (`spout-probe/`, a list/grab/watch test
+tool, and the test-only `VTC_*` switches below were removed before the public release; they're in git history.)
 
 ### Setup steps (in order)
 1. ✅ Write this design document
