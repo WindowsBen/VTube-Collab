@@ -46,23 +46,6 @@ impl Default for RoomSettings {
     }
 }
 
-/// Logins for the relay server (TURN), used only when two PCs can't connect
-/// directly. Handed out by the room server, valid for at least a day.
-#[derive(Deserialize, Clone, PartialEq)]
-pub struct RelayLogins {
-    /// e.g. "turn:turn.cloudflare.com:3478?transport=udp", "turns:...:443?transport=tcp"
-    pub urls: Vec<String>,
-    pub username: String,
-    pub credential: String,
-}
-
-impl std::fmt::Debug for RelayLogins {
-    /// Never print the login itself (it could end up in a log someone shares).
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "RelayLogins({} servers)", self.urls.len())
-    }
-}
-
 /// Messages from the room. `#[serde(tag = "type")]` maps {"type":"member_left",...} to `MemberLeft`.
 #[derive(Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -77,9 +60,6 @@ pub enum FromRoom {
         /// Secret for getting our place back after a dropped connection (newer servers).
         #[serde(default)]
         resume: Option<String>,
-        /// Relay logins, if the room server has a relay set up.
-        #[serde(default)]
-        ice: Option<RelayLogins>,
     },
     /// The host changed the room's settings (e.g. the receive buffer).
     Settings { settings: RoomSettings },

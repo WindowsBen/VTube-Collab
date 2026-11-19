@@ -74,6 +74,13 @@ Rough upload need per person (~3 Mbps per 720p30 stream with transparency):
 - Native OBS plugin.
 - macOS support.
 - Volunteer hub for large rooms.
+- **Relay (TURN) for networks that block direct connections** — postponed from 0.4.0-beta. A working
+  version is in commit ae196c6: the room server fetched Cloudflare Realtime TURN logins (secrets
+  `TURN_KEY_ID`, `TURN_KEY_API_TOKEN`, 48 h, shared per room) and sent them in "welcome" as `ice`; the app
+  added UDP 3478, UDP 443 and TCP 80 relays ("turns:" doesn't work: libnice has no TLS for relays).
+  Untested end to end: Cloudflare answered "cannot find specified key" (404) to the key we had, even when
+  asked directly. Next time, create the key under Realtime > TURN Server and test it with a direct API call
+  first. Free up to 1,000 GB a month, then $0.05/GB.
 
 ## 5. Known issues (may revisit)
 - **Host received only ~50–55 fps** in the 2-PC test (2026-11-17), while the friend sent and received 60.
@@ -237,11 +244,8 @@ Progress:
   - Works with 0.2.0/0.2.1 clients and with the old server (then no resume, no removing). New server must
     be deployed.
 - ✅ **0.4.0-beta** (2026-11-19), first public release:
-  - Relay (TURN) for networks that block direct connections: the room server gets Cloudflare Realtime TURN
-    logins (secrets `TURN_KEY_ID`, `TURN_KEY_API_TOKEN`; 48 h, shared per room, renewed after 24 h) and
-    hands them out in "welcome" (`ice`). The app adds UDP 3478, UDP 443 and TCP 80 to every connection;
-    "turns:" is skipped (libnice has no TLS for relays). Used only when direct fails. Free up to 1,000 GB a
-    month, then $0.05/GB. Test-only: `VTC_RELAY_ONLY=1` forces the relay. STUN is now Cloudflare's.
+  - STUN is now Cloudflare's (stun.cloudflare.com:3478, free). The relay (TURN) was built but taken out
+    before release (see section 4).
   - Daily limit: the server answers 429 when the free plan's allowance is used up (Workers' own limit, or a
     Durable Object error caught in index.js). The app explains it (works again at midnight UTC, in how long)
     and offers long codes; other server problems get their own explanation.
@@ -254,7 +258,7 @@ Progress:
     download button. Needs the repo public and each version published as a release (tag `vX.Y.Z-beta`).
   - README rewritten for the public (install, SmartScreen warning, troubleshooting, reporting problems,
     privacy). The bundle only carries the licences of the libraries it ships.
-  - Works with older clients and the old server (then no relay and no buffer changes). New server must be
+  - Works with older clients and the old server (then no buffer changes). New server must be
     deployed.
 
 Code layout: `vtc-core/` (shared: Spout capture/output, GPU pack/unpack, compositor), `collab/` (connection

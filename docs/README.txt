@@ -51,9 +51,9 @@ IF SOMETHING GOES WRONG
   or antivirus is blocking VTube Collab.
 
 "Couldn't connect" next to someone
-  There's no route between your two PCs. VTube Collab tries a direct connection
-  first, then a relay. Check that VTube Collab is allowed through Windows Firewall on
-  both PCs. Some work, school or hotel networks block it completely.
+  There's no direct route between your two PCs. Check that VTube Collab is allowed
+  through Windows Firewall on both PCs. Some work, school or hotel networks and mobile
+  hotspots block direct connections; there's no way around that yet.
 
 Your avatar isn't in the list
   Turn on Spout2 output in your VTubing app, then wait a couple of seconds.
@@ -77,8 +77,6 @@ the room, nothing else.
 
 PRIVACY
 - Video goes directly between your PCs, encrypted. Nobody else gets it.
-- If a direct connection isn't possible, the encrypted video goes through Cloudflare's
-  relay, which can't see it.
 - The room server (on Cloudflare) passes connection details between the people in a
   room. It sees your name, the room code and your IP address. The people in your room
   see your name and IP address (needed to connect directly). The server keeps nothing

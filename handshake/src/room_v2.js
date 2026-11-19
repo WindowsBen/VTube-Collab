@@ -14,10 +14,9 @@
 //   {type:"signal", to, data}                          (approved members only)
 //   "ping" (plain text)                                answered "pong" without waking the room
 // Room → client:
-//   {type:"welcome", you, host, members:[{id,name}], settings:{max_people, buffer_ms}, resume, ice}
+//   {type:"welcome", you, host, members:[{id,name}], settings:{max_people, buffer_ms}, resume}
 //                                                      you're in (members = who's already there;
-//                                                      resume = secret for getting your place back;
-//                                                      ice = relay server logins, if set up — see below)
+//                                                      resume = secret for getting your place back)
 //   {type:"settings", settings}                        the host changed the room's settings
 //   {type:"waiting"}                                   waiting for the host to approve you
 //   {type:"declined"} {type:"room_full"}               then the room closes your connection
@@ -37,12 +36,6 @@
 // Up-to-date clients (?v=3) send "ping" every 20 s. One that has been silent for
 // 70 s is treated as dropped (its connection is probably dead without the room
 // having noticed). Older clients don't ping, so they're never checked.
-//
-// Relay (TURN): some networks block direct connections between PCs. If the secrets
-// TURN_KEY_ID and TURN_KEY_API_TOKEN are set (a TURN key from Cloudflare Realtime),
-// each newcomer gets short-lived relay logins in "welcome"; their app only uses the
-// relay when a direct connection isn't possible. One set of logins is shared per room
-// and renewed when it gets old. Without the secrets, "ice" is left out.
 //
 // Uses Cloudflare's WebSocket "hibernation": while nobody is talking the room sleeps
 // and costs nothing. Members who are in the room are stored ("m:<id>"), so a room
@@ -78,10 +71,6 @@ const GRACE_MS = 45 * 1000;
 const HEARTBEAT_TIMEOUT_MS = 70 * 1000;
 // Most messages kept for one dropped member.
 const MAX_KEPT_MESSAGES = 50;
-// Relay logins last 48 h (Cloudflare's maximum); renewed once less than 24 h are left,
-// so anyone joining has at least 24 h of relay time.
-const RELAY_LOGIN_SECONDS = 48 * 3600;
-const RELAY_RENEW_MS = 24 * 3600 * 1000;
 
 export class RoomV2 extends DurableObject {
   constructor(ctx, env) {
@@ -197,33 +186,6 @@ export class RoomV2 extends DurableObject {
     if (host) await this.deliver(host.id, { type: "join_cancelled", id });
   }
 
-  /// Relay logins for this room {urls, username, credential}, or null if relays
-  /// aren't set up (or Cloudflare couldn't be asked just now).
-  async relayLogins() {
-    const { TURN_KEY_ID: keyId, TURN_KEY_API_TOKEN: token } = this.env;
-    if (!keyId || !token) return null;
-    const saved = await this.ctx.storage.get("relay");
-    if (saved && saved.expires - Date.now() > RELAY_RENEW_MS) return saved.ice;
-    try {
-      const reply = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${keyId}/credentials/generate-ice-servers`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ ttl: RELAY_LOGIN_SECONDS }),
-      });
-      if (!reply.ok) throw new Error(`HTTP ${reply.status}`);
-      const { iceServers } = await reply.json();
-      const relay = iceServers.find((s) => s.username && s.credential);
-      if (!relay) throw new Error("no relay in the answer");
-      const urls = [].concat(relay.urls).filter((u) => !/:53(\?|$)/.test(u)); // port 53 is often blocked
-      const ice = { urls, username: relay.username, credential: relay.credential };
-      await this.ctx.storage.put("relay", { ice, expires: Date.now() + RELAY_LOGIN_SECONDS * 1000 });
-      return ice;
-    } catch (e) {
-      console.log(`couldn't get relay logins: ${e}`);
-      return saved && saved.expires > Date.now() ? saved.ice : null;
-    }
-  }
-
   // ---------- new connections ----------
 
   async fetch(request) {
@@ -299,7 +261,6 @@ export class RoomV2 extends DurableObject {
   async admit(ws, { id, name, order, host }, room) {
     const others = await this.records();
     const secret = crypto.randomUUID();
-    const ice = await this.relayLogins();
     await this.ctx.storage.put(`m:${id}`, { id, name, secret, host, order, goneSince: null });
     if (room.emptySince) {
       room.emptySince = null;
@@ -312,7 +273,6 @@ export class RoomV2 extends DurableObject {
       members: others.map((r) => ({ id: r.id, name: r.name })),
       settings: room.settings,
       resume: secret,
-      ...(ice ? { ice } : {}),
     });
     for (const r of others) await this.deliver(r.id, { type: "member_joined", id, name });
     await this.scheduleAlarm();

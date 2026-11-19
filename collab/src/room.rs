@@ -173,16 +173,7 @@ impl Room {
             while let Ok(msg) = link.incoming.try_recv() {
                 match msg {
                     FromRoom::Waiting => room_events(RoomEvent::Waiting),
-                    FromRoom::Welcome { host, members, settings, ice, .. } => {
-                        // Relay for partners we can't reach directly (if the server has one).
-                        match &ice {
-                            Some(logins) => {
-                                let relays = peer::relay_uris(logins);
-                                crate::log::info(&format!("Relay: {} servers available", relays.len()));
-                                s.set_relays(relays);
-                            }
-                            None => crate::log::info("Relay: none (the room server has no relay set up)"),
-                        }
+                    FromRoom::Welcome { host, members, settings, .. } => {
                         // Everyone in the room uses the host's buffer setting.
                         s.set_receive_buffer(settings.buffer_ms);
                         // ...and sends video at the size that suits the room (before anyone connects).

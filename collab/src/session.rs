@@ -168,8 +168,6 @@ pub struct Session {
     decoder: String,
     /// Partners whose video stopped (see `take_lost_partners`).
     lost: Vec<PeerId>,
-    /// Relay server addresses (from the room server), added to every new connection.
-    relays: Vec<String>,
     /// Share of the normal bitrate we send at (QUALITY_MIN-1.0), lowered when partners
     /// lose packets; and how many reports in a row were bad / good.
     quality: f64,
@@ -240,7 +238,6 @@ impl Session {
             sent_any: false,
             decoder,
             lost: Vec::new(),
-            relays: Vec::new(),
             quality: 1.0,
             loss_reports: (0, 0),
         })
@@ -288,11 +285,6 @@ impl Session {
         }
     }
 
-    /// Relay server addresses (see `peer::relay_uris`) for connections made from now on.
-    pub fn set_relays(&mut self, relays: Vec<String>) {
-        self.relays = relays;
-    }
-
     // ---------------- partners ----------------
 
     /// Add a partner: their own send branch, connection, receiver and Spout source.
@@ -314,13 +306,6 @@ impl Session {
             .property("stun-server", peer::STUN_SERVER)
             .property("latency", self.buffer_ms)
             .build()?;
-        for relay in &self.relays {
-            webrtc.emit_by_name::<bool>("add-turn-server", &[relay]);
-        }
-        // TEST ONLY: VTC_RELAY_ONLY=1 forces every connection through the relay (to test it).
-        if std::env::var("VTC_RELAY_ONLY").is_ok_and(|v| v == "1") {
-            webrtc.set_property_from_str("ice-transport-policy", "relay");
-        }
         simulate_bad_network(&webrtc);
         self.pipeline.add_many([send_bin.upcast_ref::<gst::Element>(), &webrtc])?;
         send_bin.link(&webrtc)?;
