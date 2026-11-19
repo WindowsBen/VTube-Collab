@@ -88,5 +88,6 @@ PRIVACY
 
 Updates: the app tells you when a new version is out (Help > About > Website).
 
-Includes GStreamer (LGPL) and other open-source libraries, plus the Microsoft C++
-runtime. Their licences are in the "licenses" folder.
+VTube Collab is open source under the MIT licence. It includes GStreamer (LGPL) and
+other open-source libraries, plus the Microsoft C++ runtime. All licences are in the
+"licenses" folder.

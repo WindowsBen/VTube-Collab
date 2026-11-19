@@ -20,6 +20,8 @@ pub enum RoomError {
     /// The room server runs on a free plan with a daily allowance, and it's used up.
     /// It works again after midnight UTC.
     DailyLimit,
+    /// Too many rooms opened / joined from this internet connection in the last minute.
+    Busy,
     Other(String),
 }
 
@@ -29,6 +31,7 @@ impl fmt::Display for RoomError {
             RoomError::Unavailable(why) => write!(f, "the room server can't be reached ({why})"),
             RoomError::NotFound => write!(f, "that room code doesn't exist or the room has closed"),
             RoomError::DailyLimit => write!(f, "{DAILY_LIMIT}"),
+            RoomError::Busy => write!(f, "{BUSY}"),
             RoomError::Other(why) => write!(f, "{why}"),
         }
     }
@@ -38,6 +41,9 @@ impl std::error::Error for RoomError {}
 
 /// The wording for `RoomError::DailyLimit` (the app spots it to explain what to do).
 pub const DAILY_LIMIT: &str = "the room server has reached its free daily limit";
+
+/// The wording for `RoomError::Busy`.
+pub const BUSY: &str = "too many rooms were opened or joined from your internet connection in the last minute; wait a minute and try again";
 
 /// Time until the room server's daily allowance resets (midnight UTC), e.g. "3 h 20 min".
 pub fn until_daily_reset() -> String {

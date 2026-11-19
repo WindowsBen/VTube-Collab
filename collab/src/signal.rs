@@ -121,6 +121,7 @@ pub fn create_room(settings: RoomSettings) -> Result<(String, String), RoomError
     let body = serde_json::to_string(&settings).expect("settings convert to JSON");
     let mut response = ureq::post(&url).send(&body).map_err(|e| match e {
         ureq::Error::StatusCode(429) => RoomError::DailyLimit,
+        ureq::Error::StatusCode(503) => RoomError::Busy,
         other => RoomError::Unavailable(other.to_string()),
     })?;
     let text = response.body_mut().read_to_string().map_err(|e| RoomError::Other(e.to_string()))?;
@@ -352,6 +353,7 @@ fn open(url: &str) -> Result<Socket, RoomError> {
     let (mut socket, _) = tungstenite::client_tls(url, tcp).map_err(|e| match e {
         HandshakeError::Failure(tungstenite::Error::Http(r)) if r.status().as_u16() == 404 => RoomError::NotFound,
         HandshakeError::Failure(tungstenite::Error::Http(r)) if r.status().as_u16() == 429 => RoomError::DailyLimit,
+        HandshakeError::Failure(tungstenite::Error::Http(r)) if r.status().as_u16() == 503 => RoomError::Busy,
         HandshakeError::Failure(other) => unavailable(&other),
         HandshakeError::Interrupted(_) => RoomError::Unavailable("connection interrupted".into()),
     })?;

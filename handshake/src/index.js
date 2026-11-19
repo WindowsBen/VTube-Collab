@@ -8,6 +8,7 @@
 //                                          → 201 {code, token, settings}   (token = host's secret)
 //   GET  /v2/rooms/<code>/ws?name=..&token=..   WebSocket into the room
 //   429 = the free plan's daily allowance is used up (works again after midnight UTC)
+//   503 = too many requests from one internet connection in the last minute (see below)
 
 import { roomSettings } from "./room_v2.js";
 export { RoomV2 } from "./room_v2.js"; // rooms for 2–100 people
@@ -42,6 +43,21 @@ function normaliseRoomCode(text) {
   return `${parts[0]}-${parts[1]}-${parts[2].padStart(2, "0")}`;
 }
 
+/// Per-connection limits, so one person (or a script) can't use up the free daily
+/// allowance for everyone. Counted per IP address over 60 s; the numbers are in
+/// wrangler.toml. If a limiter isn't set up (e.g. an old Wrangler), nothing is limited.
+async function allowed(limiter, request) {
+  if (!limiter) return true;
+  const key = request.headers.get("CF-Connecting-IP") || "unknown";
+  try {
+    return (await limiter.limit({ key })).success;
+  } catch {
+    return true; // never lock people out because the limiter itself failed
+  }
+}
+
+const SLOW_DOWN = "too many requests from your internet connection, wait a minute and try again";
+
 function text(body, status = 200) {
   return new Response(body, { status, headers: { "content-type": "text/plain; charset=utf-8" } });
 }
@@ -70,6 +86,7 @@ async function handle(request, env) {
 
   // Create a room with the host's settings.
   if (parts.length === 2 && request.method === "POST") {
+    if (!(await allowed(env.CREATE_LIMIT, request))) return text(SLOW_DOWN, 503);
     let body = {};
     try {
       const raw = await request.text();
@@ -95,6 +112,7 @@ async function handle(request, env) {
   if (parts.length === 4 && parts[3] === "ws") {
     const code = normaliseRoomCode(parts[2]);
     if (!code) return text("not a room code", 404);
+    if (!(await allowed(env.JOIN_LIMIT, request))) return text(SLOW_DOWN, 503);
     return room(code).fetch(request);
   }
   return text("not found", 404);

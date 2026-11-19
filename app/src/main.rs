@@ -101,7 +101,7 @@ pub enum Dialog {
 impl Dialog {
     fn size(self) -> egui::Vec2 {
         match self {
-            Dialog::About => vec2(360.0, 240.0),
+            Dialog::About => vec2(360.0, 256.0),
             Dialog::HowTo => vec2(360.0, 288.0),
         }
     }
@@ -641,6 +641,9 @@ impl App {
                     collab::rooms::until_daily_reset()
                 ));
                 xp::hint(ui, "Collabs that are already running are not affected.");
+            } else if why.contains(collab::rooms::BUSY) {
+                ui.label("Too many rooms were opened from your internet connection in the last minute. \
+                          Wait a minute, then click Cancel and host again.");
             } else {
                 ui.label("Couldn't open a room. Check that you're online. If other websites work, a firewall \
                           or antivirus may be blocking VTube Collab, or the room server is having trouble: \
@@ -1130,7 +1133,7 @@ fn dialog_contents(ui: &mut egui::Ui, dialog: Dialog, ok: &mut bool) {
             });
             ui.add_space(6.0);
             ui.label("Collab with VTubers using any VTubing app: avatars travel directly between your PCs, with transparency, into OBS.");
-            xp::hint(ui, "Uses GStreamer (LGPL) for video. Licences are in the 'licenses' folder.");
+            xp::hint(ui, "Open source (MIT licence). Uses GStreamer (LGPL) for video. Licences are in the 'licenses' folder.");
             if xp::button(ui, "Website...", true, false).clicked() {
                 open_web_page(collab::update::WEBSITE);
             }

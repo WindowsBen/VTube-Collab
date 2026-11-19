@@ -258,6 +258,10 @@ Progress:
     download button. Needs the repo public and each version published as a release (tag `vX.Y.Z-beta`).
   - README rewritten for the public (install, SmartScreen warning, troubleshooting, reporting problems,
     privacy). The bundle only carries the licences of the libraries it ships.
+  - Per-IP limits on the room server (Workers rate-limit bindings in wrangler.toml, free): 5 rooms and 30
+    room connections (joins/reconnects) a minute per IP. Over the limit → HTTP 503, and the app says "wait a
+    minute". (429 stays reserved for Cloudflare's daily limit.)
+  - Licence: MIT (LICENSE, Cargo.toml `license`, shipped in the bundle's licenses folder, shown in About).
   - Works with older clients and the old server (then no buffer changes). New server must be
     deployed.
 

@@ -1,6 +1,7 @@
 {
   "name": "vtube-collab-handshake",
   "private": true,
+  "license": "MIT",
   "description": "Handshake (room code) server for VTube Collab, on Cloudflare Workers",
   "scripts": {
     "dev": "wrangler dev",

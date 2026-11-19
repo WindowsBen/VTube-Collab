@@ -25,3 +25,16 @@ new_sqlite_classes = ["RoomV2"]     # rooms for 2–100 people
 [[migrations]]
 tag = "v3"
 deleted_classes = ["Room"]          # first room server removed (no longer used)
+
+# Per-IP limits (free): one internet connection can open at most 5 rooms and make
+# 30 room connections (joins and reconnects) a minute. Protects the daily allowance
+# from someone opening rooms in a loop. Over the limit → "wait a minute" (HTTP 503).
+[[ratelimits]]
+name = "CREATE_LIMIT"
+namespace_id = "1001"
+simple = { limit = 5, period = 60 }
+
+[[ratelimits]]
+name = "JOIN_LIMIT"
+namespace_id = "1002"
+simple = { limit = 30, period = 60 }

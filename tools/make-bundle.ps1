@@ -108,6 +108,7 @@ $licences = @(
     'glib', 'libffi', 'proxy-libintl', 'pcre2', 'zlib', 'orc',      # GStreamer's helpers
     'libnice', 'openssl', 'libsrtp'                                  # connections + encryption
 )
+Copy-Item "$root\LICENSE" "$bundle\licenses\VTube Collab (MIT).txt"
 foreach ($l in $licences) {
     if (-not (Test-Path "$gst\share\licenses\$l")) { throw "licence folder '$l' not found" }
     Copy-Item "$gst\share\licenses\$l" "$bundle\licenses\" -Recurse
