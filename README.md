@@ -59,17 +59,18 @@ The app tells you when a new version is out.
 
 <table>
 <tr>
-<td width="50%"><img src="docs/screenshots/setup.png" alt="Setup screen"></td>
-<td width="50%"><img src="docs/screenshots/settings.png" alt="Room settings"></td>
+<td width="33%"><img src="docs/screenshots/setup.png" alt="Setup screen"></td>
+<td width="33%"><img src="docs/screenshots/settings.png" alt="Room settings"></td>
+<td width="33%"><img src="docs/screenshots/join.png" alt="Joining with a room code"></td>
 </tr>
 <tr>
 <td><b>1. Set up.</b> Enter your name and pick your avatar (your VTubing app's Spout2 output).</td>
 <td><b>2. Host</b> a collab, choose the room settings and click <b>Open room</b>.</td>
+<td><b>Or join:</b> click <b>Join a collab...</b> and type the room code you were given.</td>
 </tr>
 </table>
 
-3. **Share the room code** with everyone joining and click **Accept** as they ask to join.<br>
-   Joining instead? Click **Join a collab...** and type the code you were given.
+3. **Share the room code** with everyone joining and click **Accept** as they ask to join.
 4. **In OBS**, add a **Spout2 Capture** source and pick **`Collab - <name>`** for each person.<br>
    Or tick **Publish a group source** and add **`Collab - Group`** once for everyone.
 
